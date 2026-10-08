@@ -49,6 +49,7 @@ import {
   MuseDelta,
   MuseItemEvent,
   MuseSessionResult,
+  MuseSubscriptionUsage,
   MuseTokenUsageEvent,
   MuseTodoList,
   MuseTurnRetryScheduled,
@@ -60,6 +61,7 @@ import {
   museApprovalOptions,
   type MuseItem,
 } from "../../provider/museProtocol.ts";
+import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "../../provider/museUsageLimits.ts";
 import {
   createMuseSdkHostEffect,
   museApprovalMode,
@@ -216,6 +218,10 @@ export interface MuseAdapterV2Options {
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
   };
+  /** Receives each subscription usage report (`usage/changed`) from this adapter's hosts. */
+  readonly onSubscriptionUsage?: (usage: MuseSubscriptionUsage) => Effect.Effect<void>;
+  /** The newest report across the instance, for dating a turn stopped at a usage limit. */
+  readonly latestSubscriptionUsage?: Effect.Effect<MuseSubscriptionUsage | undefined>;
 }
 
 interface ActiveTurn {
@@ -260,6 +266,7 @@ const INFORMATIONAL_NOTIFICATIONS = new Set([
   "session/tokenUsage",
   "session/todoListChanged",
   "turn/retryScheduled",
+  "usage/changed",
 ]);
 // Tools whose results already show as their own rows: T3's todo list and question
 // rows, and the workflow item a `workflow` call launches.
@@ -736,9 +743,23 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
         yield* updateSession(disposition === "broken" ? "error" : "ready", detail ?? null);
         active = undefined;
         if (status === "failed") {
+          const usageLimited = disposition === "reusable" && isMuseUsageLimitFailure(detail);
           const failure = makeProviderFailure({
-            class: disposition === "broken" ? "transport_error" : "provider_error",
+            class:
+              disposition === "broken"
+                ? "transport_error"
+                : usageLimited
+                  ? "usage_limit"
+                  : "provider_error",
             message: detail ?? "Muse turn failed.",
+            ...(usageLimited && options.latestSubscriptionUsage
+              ? {
+                  resetAt: museUsageLimitResetAt(
+                    yield* options.latestSubscriptionUsage,
+                    DateTime.toEpochMillis(completedAt),
+                  ),
+                }
+              : {}),
           });
           const base = baseItem(turn, `failure:${turn.nativeId}`, completedAt);
           yield* emit({
@@ -748,7 +769,7 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
               ...base,
               type: "error",
               status: "failed",
-              title: null,
+              title: usageLimited ? "Usage limit reached" : null,
               completedAt,
               failure,
             },
@@ -922,6 +943,12 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
       });
       const handleNotification = Effect.fnUntraced(function* (method: string, data: unknown) {
         const params = yield* decode(recordSchema, data);
+        // Account-wide, so it names no session: Meta's subscription windows after a response.
+        if (method === "usage/changed") {
+          const usage = yield* decode(MuseSubscriptionUsage, params);
+          if (options.onSubscriptionUsage) yield* options.onSubscriptionUsage(usage);
+          return;
+        }
         if (params.sessionId !== nativeSessionId) return;
         if (method === "view/gap")
           return yield* protocolError("Muse delivery gap requires session recovery");

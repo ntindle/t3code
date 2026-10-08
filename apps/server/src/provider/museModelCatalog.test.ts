@@ -5,15 +5,18 @@ import * as Schema from "effect/Schema";
 
 import type { MuseSdkHost } from "./museSdk.ts";
 import {
-  discoverMuseModels,
   museModelCapabilities,
+  probeMuseHost,
   resolveMuseReasoningEffort,
 } from "./museModelCatalog.ts";
 
 const settings = Schema.decodeSync(MuseSettings)({});
-const host = (catalog: Record<string, unknown>): MuseSdkHost => ({
+const host = (
+  catalog: Record<string, unknown>,
+  account?: Record<string, unknown>,
+): MuseSdkHost => ({
   connection: {
-    request: async () => catalog,
+    request: async (method: string) => (method === "account/read" && account ? account : catalog),
     command: async () => ({}),
     mintCommandId: () => "test",
     onNotification: () => {},
@@ -39,7 +42,7 @@ const row = (modelId: string, extra: Record<string, unknown> = {}) => ({
 describe("Muse model catalog", () => {
   it.effect("uses the labels, efforts and defaults that model/list sends", () =>
     Effect.gen(function* () {
-      const models = yield* discoverMuseModels(settings, {}, undefined, async () =>
+      const { models, account } = yield* probeMuseHost(settings, {}, undefined, async () =>
         host({
           providerId: "meta",
           profileId: "tbh",
@@ -79,6 +82,29 @@ describe("Muse model catalog", () => {
       // Older hosts and "unknown" fall back to Muse's documented tiers.
       expect(models[1]?.capabilities).toEqual(museModelCapabilities());
       expect(models[2]?.capabilities).toEqual(museModelCapabilities());
+      // A host that does not answer account/read in the expected shape leaves the account unknown.
+      expect(account).toBeUndefined();
+    }),
+  );
+
+  it.effect("reads the signed-in account from the experimental account/read", () =>
+    Effect.gen(function* () {
+      const { account } = yield* probeMuseHost(settings, {}, undefined, async () =>
+        host(
+          { providerId: "meta", models: [row("muse-spark-1.3", { isDefault: true })] },
+          {
+            state: "accountLogin",
+            label: "person@example.com",
+            avatarUrl: "https://example.com/a.png",
+            credentialRequired: true,
+          },
+        ),
+      ).pipe(Effect.scoped);
+      expect(account).toEqual({
+        state: "accountLogin",
+        label: "person@example.com",
+        credentialRequired: true,
+      });
     }),
   );
 

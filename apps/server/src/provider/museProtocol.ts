@@ -152,6 +152,32 @@ export const MuseTurnCompleted = Schema.Struct({
   error: Schema.optional(Schema.Struct({ message: Schema.String })),
   usage: Schema.optional(MuseUsage),
 });
+/**
+ * `usage/changed` params and the `usage/read` result's `usage`: the Meta
+ * subscription windows the host last saw. Percentages are Meta's, verbatim,
+ * and may exceed 100.
+ */
+export const MuseSubscriptionUsage = Schema.Struct({
+  observedAtMs: Schema.Finite.check(Schema.isGreaterThan(0)),
+  tier: Schema.String,
+  window: Schema.Struct({
+    usedPercent: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+    windowDurationMins: Schema.Finite.check(Schema.isGreaterThan(0)),
+    resetsAtMs: Schema.Finite.check(Schema.isGreaterThan(0)),
+  }),
+  weekly: Schema.Struct({
+    usedPercent: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+    resetsAtMs: Schema.Finite.check(Schema.isGreaterThan(0)),
+  }),
+});
+export type MuseSubscriptionUsage = typeof MuseSubscriptionUsage.Type;
+/** Experimental `account/read` result: the credential lane in effect and, for a login, its account. */
+export const MuseAccountState = Schema.Struct({
+  state: Schema.String,
+  label: Schema.optional(Schema.String),
+  credentialRequired: Schema.optional(Schema.Boolean),
+});
+export type MuseAccountState = typeof MuseAccountState.Type;
 export const MuseTurnRetryScheduled = Schema.Struct({
   turnId: NonEmptyString,
   nextAttempt: Schema.Int.check(Schema.isGreaterThan(0)),

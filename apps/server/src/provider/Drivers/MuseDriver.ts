@@ -1,8 +1,10 @@
 import { MuseSettings, ProviderDriverKind } from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
@@ -20,7 +22,10 @@ import { checkMuseProviderStatus, makePendingMuseProvider } from "../MuseProvide
 import * as ProviderEventLoggers from "../ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "../museMaintenance.ts";
+import type { MuseSubscriptionUsage } from "../museProtocol.ts";
 import { makeMuseEnvironment } from "../museSdk.ts";
+import { museStatusUsageLimits, museUsageWindows } from "../museUsageLimits.ts";
+import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -92,6 +97,20 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
+      // Meta reports subscription usage only with a model response, and a status
+      // check makes none. Keep the newest report from any of this instance's
+      // sessions so a refresh re-derives the windows instead of dropping them.
+      const latestUsage = yield* Ref.make<MuseSubscriptionUsage | undefined>(undefined);
+      const withUsageLimits = (provider: ServerProviderDraft) =>
+        Effect.gen(function* () {
+          const usageLimits = museStatusUsageLimits({
+            auth: provider.auth,
+            enabled: provider.enabled,
+            observation: yield* Ref.get(latestUsage),
+            nowMs: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+          return usageLimits ? { ...provider, usageLimits } : provider;
+        });
       const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
         resolveProviderMaintenanceCapabilitiesEffect(museMaintenance, {
           binaryPath: effectiveConfig.binaryPath,
@@ -122,6 +141,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         initialSnapshot: (settings) =>
           makePendingMuseProvider(settings.provider).pipe(Effect.map(stampIdentity)),
         checkProvider: checkMuseProviderStatus(effectiveConfig, processEnvironment, cwd).pipe(
+          Effect.flatMap(withUsageLimits),
           Effect.map(stampIdentity),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -160,6 +180,23 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         serverConfig,
         fileSystem,
         modelCatalog,
+        latestSubscriptionUsage: Ref.get(latestUsage),
+        onSubscriptionUsage: (usage) =>
+          Effect.gen(function* () {
+            // Every session's host reports; an older report arriving late must not win.
+            const newer = yield* Ref.modify(latestUsage, (previous) =>
+              previous && previous.observedAtMs >= usage.observedAtMs
+                ? [false, previous]
+                : [true, usage],
+            );
+            // An API-key instance leaves the account to its hub; see museStatusUsageLimits.
+            if (!newer || (yield* snapshot.getSnapshot).auth.type === "apiKey") return;
+            const now = yield* DateTime.now;
+            yield* snapshot.applyUsageLimits({
+              windows: museUsageWindows(usage, DateTime.toEpochMillis(now)),
+              checkedAt: DateTime.formatIso(DateTime.makeUnsafe(usage.observedAtMs)),
+            });
+          }),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         continuationRequests,
       });

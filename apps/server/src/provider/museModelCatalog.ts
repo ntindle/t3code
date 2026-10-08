@@ -2,7 +2,9 @@ import type { SendUserTurnOptions } from "@muse-code/sdk";
 import type { ModelCapabilities, MuseSettings, ServerProviderModel } from "@t3tools/contracts";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { MuseAccountState } from "./museProtocol.ts";
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./museSdk.ts";
 
 type MuseReasoningEffort = NonNullable<SendUserTurnOptions<never>["reasoningEffort"]>;
@@ -42,6 +44,7 @@ const ModelCatalogEntry = Schema.Struct({
 const decodeModelList = Schema.decodeUnknownEffect(
   Schema.Struct({ providerId: Schema.String, models: Schema.Array(ModelCatalogEntry) }),
 );
+const decodeAccountState = Schema.decodeUnknownEffect(MuseAccountState);
 
 /** Builds the reasoning picker from a `model/list` row, or the fallback when called without one. */
 export function museModelCapabilities(
@@ -96,7 +99,12 @@ class MuseCatalogError extends Schema.TaggedError<MuseCatalogError>()("MuseCatal
   detail: Schema.String,
 }) {}
 
-export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
+/**
+ * What a read-only host reports about this machine's Muse: the model catalog
+ * and, where the experimental `account/read` is served, the credential in
+ * effect. Neither starts a session or a model call.
+ */
+export const probeMuseHost = Effect.fn("probeMuseHost")(function* (
   settings: MuseSettings,
   environment: NodeJS.ProcessEnv | undefined,
   cwd?: string,
@@ -109,6 +117,7 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
         ...(environment ? { environment } : {}),
         ...(cwd ? { cwd } : {}),
         readOnly: true,
+        experimentalApi: true,
         startupTimeoutMs: 8_000,
       },
       createHost,
@@ -122,7 +131,7 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
     return yield* new MuseCatalogError({ detail: "Muse returned a catalog for another provider." });
   }
   const seen = new Set<string>();
-  return catalog.models.flatMap((model): ServerProviderModel[] => {
+  const models = catalog.models.flatMap((model): ServerProviderModel[] => {
     if (model.providerId !== "meta" || seen.has(model.modelId)) return [];
     seen.add(model.modelId);
     return [
@@ -135,4 +144,10 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
       },
     ];
   });
+  // A host without the experimental surface leaves the account unknown, as before.
+  const account = yield* Effect.tryPromise(() => host.connection.request("account/read", {})).pipe(
+    Effect.flatMap(decodeAccountState),
+    Effect.option,
+  );
+  return { models, account: Option.getOrUndefined(account) };
 });
