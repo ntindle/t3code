@@ -95,6 +95,17 @@ describe("Muse usage limits", () => {
     expect(status(login, false, false)).toBeUndefined();
     // Signed out, the last report has no account to show under.
     expect(status({ status: "unauthenticated" }, true)).toBeUndefined();
+    // Just after another account signs in, the old report is gone but its windows are still
+    // published; no usage clears them, where "waiting for a report" would keep them.
+    expect(
+      museStatusUsageLimits({
+        auth: { ...login, email: "b@example.com" },
+        enabled: true,
+        observation: undefined,
+        dropped: true,
+        nowMs: reported,
+      }),
+    ).toBeUndefined();
   });
 
   it("drops a kept report once its account logs out or another one signs in", () => {

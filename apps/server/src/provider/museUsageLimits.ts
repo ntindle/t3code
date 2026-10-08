@@ -123,6 +123,8 @@ export function museStatusUsageLimits(input: {
   readonly auth: ServerProviderAuth;
   readonly enabled: boolean;
   readonly observation: MuseUsageObservation | undefined;
+  /** This check dropped the kept report, for a logout or another account's login. */
+  readonly dropped?: boolean;
   readonly nowMs: number;
 }): ServerProviderUsageLimits | undefined {
   const checkedAt = isoFromMillis(input.nowMs);
@@ -136,6 +138,9 @@ export function museStatusUsageLimits(input: {
   // Signed out, there is no account to report on.
   if (input.auth.status === "unauthenticated") return undefined;
   if (input.observation) return museUsageLimits(input.observation, input.nowMs);
+  // The dropped report's windows are still published. "Waiting for a report" would
+  // keep them, as a failed probe keeps the last good bars, so publish none to clear them.
+  if (input.dropped) return undefined;
   if (!input.enabled || input.auth.type !== "accountLogin") return undefined;
   return makeUnavailableUsageLimits({
     checkedAt,

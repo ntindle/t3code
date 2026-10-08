@@ -114,13 +114,17 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
       const usagePermit = yield* Semaphore.make(1);
       const withUsageLimits = (provider: ServerProviderDraft) =>
         Effect.gen(function* () {
-          const retained = yield* Ref.updateAndGet(latestUsage, (current) =>
-            current && museUsageStillApplies(current.account, provider.auth) ? current : undefined,
-          );
+          const { retained, dropped } = yield* Ref.modify(latestUsage, (current) => {
+            const drop =
+              current !== undefined && !museUsageStillApplies(current.account, provider.auth);
+            const kept = drop ? undefined : current;
+            return [{ retained: kept, dropped: drop }, kept] as const;
+          });
           const usageLimits = museStatusUsageLimits({
             auth: provider.auth,
             enabled: provider.enabled,
             observation: retained?.usage,
+            dropped,
             nowMs: DateTime.toEpochMillis(yield* DateTime.now),
           });
           return usageLimits ? { ...provider, usageLimits } : provider;
