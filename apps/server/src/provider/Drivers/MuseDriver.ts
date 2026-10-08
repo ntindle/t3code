@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -24,7 +25,12 @@ import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "../museMaintenance.ts";
 import type { MuseSubscriptionUsage } from "../museProtocol.ts";
 import { makeMuseEnvironment } from "../museSdk.ts";
-import { museStatusUsageLimits, museUsageWindows } from "../museUsageLimits.ts";
+import {
+  museStatusUsageLimits,
+  museUsageAccount,
+  museUsageStillApplies,
+  museUsageWindows,
+} from "../museUsageLimits.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -99,14 +105,22 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       // Meta reports subscription usage only with a model response, and a status
       // check makes none. Keep the newest report from any of this instance's
-      // sessions so a refresh re-derives the windows instead of dropping them.
-      const latestUsage = yield* Ref.make<MuseSubscriptionUsage | undefined>(undefined);
+      // sessions so a refresh re-derives the windows instead of dropping them,
+      // with the account it arrived under so a logout or another login drops it.
+      const latestUsage = yield* Ref.make<
+        { readonly usage: MuseSubscriptionUsage; readonly account: string | undefined } | undefined
+      >(undefined);
+      // Sessions report concurrently; one at a time keeps an older report from publishing last.
+      const usagePermit = yield* Semaphore.make(1);
       const withUsageLimits = (provider: ServerProviderDraft) =>
         Effect.gen(function* () {
+          const retained = yield* Ref.updateAndGet(latestUsage, (current) =>
+            current && museUsageStillApplies(current.account, provider.auth) ? current : undefined,
+          );
           const usageLimits = museStatusUsageLimits({
             auth: provider.auth,
             enabled: provider.enabled,
-            observation: yield* Ref.get(latestUsage),
+            observation: retained?.usage,
             nowMs: DateTime.toEpochMillis(yield* DateTime.now),
           });
           return usageLimits ? { ...provider, usageLimits } : provider;
@@ -180,23 +194,31 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         serverConfig,
         fileSystem,
         modelCatalog,
-        latestSubscriptionUsage: Ref.get(latestUsage),
+        latestSubscriptionUsage: Ref.get(latestUsage).pipe(
+          Effect.map((retained) => retained?.usage),
+        ),
         onSubscriptionUsage: (usage) =>
-          Effect.gen(function* () {
-            // Every session's host reports; an older report arriving late must not win.
-            const newer = yield* Ref.modify(latestUsage, (previous) =>
-              previous && previous.observedAtMs >= usage.observedAtMs
-                ? [false, previous]
-                : [true, usage],
-            );
-            // An API-key instance leaves the account to its hub; see museStatusUsageLimits.
-            if (!newer || (yield* snapshot.getSnapshot).auth.type === "apiKey") return;
-            const now = yield* DateTime.now;
-            yield* snapshot.applyUsageLimits({
-              windows: museUsageWindows(usage, DateTime.toEpochMillis(now)),
-              checkedAt: DateTime.formatIso(DateTime.makeUnsafe(usage.observedAtMs)),
-            });
-          }),
+          usagePermit.withPermits(1)(
+            Effect.gen(function* () {
+              const { auth } = yield* snapshot.getSnapshot;
+              // Every session's host reports; an older report arriving late must not win.
+              const newer = yield* Ref.modify(latestUsage, (previous) =>
+                previous && previous.usage.observedAtMs >= usage.observedAtMs
+                  ? [false, previous]
+                  : [true, { usage, account: museUsageAccount(auth) }],
+              );
+              // An API-key instance leaves the account to its hub; see museStatusUsageLimits.
+              if (!newer || auth.type === "apiKey") return;
+              const now = yield* DateTime.now;
+              yield* snapshot.applyUsageLimits({
+                windows: museUsageWindows(usage, DateTime.toEpochMillis(now)),
+                checkedAt: DateTime.formatIso(DateTime.makeUnsafe(usage.observedAtMs)),
+                // A report is the account's whole state, so a window that has reset
+                // since loses its old reset time instead of keeping it.
+                replace: true,
+              });
+            }),
+          ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         continuationRequests,
       });

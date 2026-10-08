@@ -3,9 +3,11 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   isMuseUsageLimitFailure,
   museStatusUsageLimits,
+  museUsageAccount,
   museUsageLimitResetAt,
   museUsageLimits,
   museUsageObservationFromHubSignals,
+  museUsageStillApplies,
   museUsageWindows,
 } from "./museUsageLimits.ts";
 
@@ -91,6 +93,27 @@ describe("Muse usage limits", () => {
     expect(status({ status: "unknown" }, true)).toEqual(museUsageLimits(observation, reported));
     expect(status({ status: "unknown" }, false)).toBeUndefined();
     expect(status(login, false, false)).toBeUndefined();
+    // Signed out, the last report has no account to show under.
+    expect(status({ status: "unauthenticated" }, true)).toBeUndefined();
+  });
+
+  it("drops a kept report once its account logs out or another one signs in", () => {
+    const login = {
+      status: "authenticated",
+      type: "accountLogin",
+      email: "a@example.com",
+    } as const;
+    const account = museUsageAccount(login);
+    expect(account).toBe("a@example.com");
+    expect(museUsageStillApplies(account, login)).toBe(true);
+    expect(museUsageStillApplies(account, { ...login, email: "b@example.com" })).toBe(false);
+    expect(museUsageStillApplies(account, { status: "unauthenticated" })).toBe(false);
+    // Nothing names the login without account/read, so the report stays rather than being guessed away.
+    expect(museUsageStillApplies(account, { status: "unknown" })).toBe(true);
+    expect(museUsageStillApplies(undefined, login)).toBe(true);
+    expect(
+      museUsageAccount({ status: "authenticated", type: "apiKey", label: "API key" }),
+    ).toBeUndefined();
   });
 
   it("recognises Muse's wording for a Meta quota refusal only", () => {

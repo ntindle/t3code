@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { MuseSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { MuseSdkHost } from "./museSdk.ts";
 import {
@@ -105,6 +107,39 @@ describe("Muse model catalog", () => {
         label: "person@example.com",
         credentialRequired: true,
       });
+    }),
+  );
+
+  it.effect("keeps the models when account/read never answers", () =>
+    Effect.gen(function* () {
+      const base = host({
+        providerId: "meta",
+        models: [row("muse-spark-1.3", { isDefault: true })],
+      });
+      let askedForAccount = () => {};
+      const accountRequested = new Promise<void>((resolve) => {
+        askedForAccount = resolve;
+      });
+      const probing = yield* probeMuseHost(settings, {}, undefined, async () => ({
+        ...base,
+        connection: {
+          ...base.connection,
+          request: (method: string) => {
+            if (method !== "account/read") return base.connection.request(method);
+            askedForAccount();
+            return new Promise<never>(() => {});
+          },
+        },
+      })).pipe(Effect.scoped, Effect.forkChild);
+      yield* Effect.promise(() => accountRequested);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("2 seconds");
+      // Bounded in real time, so a probe that waits on account/read fails here instead of hanging.
+      const { models, account } = yield* TestClock.withLive(
+        Fiber.join(probing).pipe(Effect.timeout("1 second")),
+      );
+      expect(models.map(({ slug }) => slug)).toEqual(["muse-spark-1.3"]);
+      expect(account).toBeUndefined();
     }),
   );
 

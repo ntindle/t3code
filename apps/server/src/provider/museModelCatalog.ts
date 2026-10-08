@@ -144,9 +144,11 @@ export const probeMuseHost = Effect.fn("probeMuseHost")(function* (
       },
     ];
   });
-  // A host without the experimental surface leaves the account unknown, as before.
+  // A host without the experimental surface leaves the account unknown, as before,
+  // and so does one that never answers: the models found above must not wait on it.
   const account = yield* Effect.tryPromise(() => host.connection.request("account/read", {})).pipe(
     Effect.flatMap(decodeAccountState),
+    Effect.timeout(2_000),
     Effect.option,
   );
   return { models, account: Option.getOrUndefined(account) };

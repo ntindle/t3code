@@ -94,6 +94,25 @@ export function museUsageLimits(
   });
 }
 
+/** The account a report belongs to: the login's address or label, when a status check named one. */
+export function museUsageAccount(auth: ServerProviderAuth): string | undefined {
+  return auth.type === "accountLogin" ? (auth.email ?? auth.label) : undefined;
+}
+
+/**
+ * Whether a report that arrived under `account` still belongs to the login a
+ * status check found. A logout or another account's login drops it, so a
+ * report never shows under an account it did not come from.
+ */
+export function museUsageStillApplies(
+  account: string | undefined,
+  auth: ServerProviderAuth,
+): boolean {
+  if (auth.status === "unauthenticated") return false;
+  const current = museUsageAccount(auth);
+  return account === undefined || current === undefined || account === current;
+}
+
 /**
  * What a status check publishes for an instance. An API key is a gateway such
  * as CLIProxyAPI, or API billing, and neither names the Meta account, so a hub
@@ -114,6 +133,8 @@ export function museStatusUsageLimits(input: {
       message: "Muse uses an API key here. A CLIProxyAPI hub reports its own accounts.",
     });
   }
+  // Signed out, there is no account to report on.
+  if (input.auth.status === "unauthenticated") return undefined;
   if (input.observation) return museUsageLimits(input.observation, input.nowMs);
   if (!input.enabled || input.auth.type !== "accountLogin") return undefined;
   return makeUnavailableUsageLimits({
