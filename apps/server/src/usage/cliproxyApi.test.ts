@@ -244,6 +244,36 @@ describe("CLIProxyAPI built-in management API", () => {
     }),
   );
 
+  it.effect("drops a Meta reset time no Date can hold instead of failing the read", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1791447762610);
+      const test = fixture({
+        accounts: [
+          accounts[0]!,
+          {
+            id: "meta-person.json",
+            auth_index: "m",
+            provider: "meta",
+            quota: {
+              observed_at: "2026-10-08T08:22:42.610Z",
+              signals: {
+                "X-Meta-Window-Used-Percent": "12",
+                "X-Meta-Window-Minutes": "300",
+                // 1e13 seconds is later than the latest instant a Date holds.
+                "X-Meta-Window-Reset-At": "10000000000000",
+                "X-Meta-Weekly-Used-Percent": "5",
+                "X-Meta-Weekly-Reset-At": "1791763200",
+              },
+            },
+          },
+        ],
+      });
+      const result = yield* (yield* test.api).readAccounts(config);
+      expect(result.map((account) => account.driver)).toEqual(["codex", "muse"]);
+      expect(result[1]?.usageLimits.windows.map((window) => window.id)).toEqual(["weekly"]);
+    }),
+  );
+
   it.effect("maps Claude scoped windows without a scheduler plugin", () =>
     Effect.gen(function* () {
       const test = fixture({

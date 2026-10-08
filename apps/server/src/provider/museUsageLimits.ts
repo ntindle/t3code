@@ -22,6 +22,7 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "@t3tools/provider-core/server/usageLimits";
+import { LATEST_DATE_MS } from "./museProtocol.ts";
 
 const WEEK_MINS = 7 * 24 * 60;
 
@@ -196,23 +197,29 @@ export function museUsageObservationFromHubSignals(
     const value = raw ? Number(raw) : Number.NaN;
     return Number.isFinite(value) ? value : undefined;
   };
+  // Unix seconds, as milliseconds; a reset no Date can hold would throw once formatted.
+  const resetMs = (name: string) => {
+    const seconds = number(name);
+    return seconds !== undefined && seconds > 0 && seconds * 1000 <= LATEST_DATE_MS
+      ? seconds * 1000
+      : undefined;
+  };
   const windowUsed = number("x-meta-window-used-percent");
   const windowMins = number("x-meta-window-minutes");
-  const windowReset = number("x-meta-window-reset-at");
+  const windowReset = resetMs("x-meta-window-reset-at");
   const weeklyUsed = number("x-meta-weekly-used-percent");
-  const weeklyReset = number("x-meta-weekly-reset-at");
+  const weeklyReset = resetMs("x-meta-weekly-reset-at");
   const window =
     windowUsed !== undefined &&
     windowUsed >= 0 &&
     windowMins !== undefined &&
     windowMins > 0 &&
-    windowReset !== undefined &&
-    windowReset > 0
-      ? { usedPercent: windowUsed, windowDurationMins: windowMins, resetsAtMs: windowReset * 1000 }
+    windowReset !== undefined
+      ? { usedPercent: windowUsed, windowDurationMins: windowMins, resetsAtMs: windowReset }
       : undefined;
   const weekly =
-    weeklyUsed !== undefined && weeklyUsed >= 0 && weeklyReset !== undefined && weeklyReset > 0
-      ? { usedPercent: weeklyUsed, resetsAtMs: weeklyReset * 1000 }
+    weeklyUsed !== undefined && weeklyUsed >= 0 && weeklyReset !== undefined
+      ? { usedPercent: weeklyUsed, resetsAtMs: weeklyReset }
       : undefined;
   if (!window && !weekly) return undefined;
   return { observedAtMs, ...(window ? { window } : {}), ...(weekly ? { weekly } : {}) };

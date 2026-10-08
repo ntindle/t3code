@@ -567,6 +567,11 @@ describe("MuseAdapterV2", () => {
       generation = 4;
       yield* fake.emitHostWide("usage/changed", SUBSCRIPTION_USAGE);
       yield* fake.emitHostWide("usage/changed", { window: "not usage" });
+      // A reset no Date can hold would throw once formatted, so the report is skipped too.
+      yield* fake.emitHostWide("usage/changed", {
+        ...SUBSCRIPTION_USAGE,
+        weekly: { usedPercent: 5, resetsAtMs: 1e16 },
+      });
       const { nativeId } = yield* startConversation(harness, fake);
       yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
       const terminal = yield* harness.takeEvent("turn.terminal");
