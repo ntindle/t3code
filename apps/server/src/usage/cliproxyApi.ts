@@ -19,7 +19,7 @@ import {
   museUsageLimits,
   museUsageObservationFromHubSignals,
 } from "../provider/museUsageLimits.ts";
-import { makeUnavailableUsageLimits } from "../provider/providerUsageLimits.ts";
+import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 
 const AuthFile = Schema.Struct({
   id: Schema.String,
