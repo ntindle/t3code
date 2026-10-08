@@ -218,8 +218,16 @@ export interface MuseAdapterV2Options {
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
   };
-  /** Receives each subscription usage report (`usage/changed`) from this adapter's hosts. */
-  readonly onSubscriptionUsage?: (usage: MuseSubscriptionUsage) => Effect.Effect<void>;
+  /**
+   * Receives each subscription usage report (`usage/changed`) from this adapter's hosts,
+   * with the account generation the reporting host started under.
+   */
+  readonly onSubscriptionUsage?: (
+    usage: MuseSubscriptionUsage,
+    accountGeneration: number,
+  ) => Effect.Effect<void>;
+  /** The instance's account generation, read as each host starts, since reports name no account. */
+  readonly usageAccountGeneration?: Effect.Effect<number>;
   /** The newest report across the instance, for dating a turn stopped at a usage limit. */
   readonly latestSubscriptionUsage?: Effect.Effect<MuseSubscriptionUsage | undefined>;
 }
@@ -326,6 +334,8 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
       const eventPermit = yield* Semaphore.make(1);
       let host: MuseSdkHost;
       let hostEpoch = 0;
+      // The account generation the current host started under; see usageAccountGeneration.
+      let hostAccountGeneration = 0;
       let closed = false;
       let broken = false;
       let nativeSessionId: string | undefined;
@@ -946,7 +956,8 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
         // Account-wide, so it names no session: Meta's subscription windows after a response.
         if (method === "usage/changed") {
           const usage = yield* decode(MuseSubscriptionUsage, params);
-          if (options.onSubscriptionUsage) yield* options.onSubscriptionUsage(usage);
+          if (options.onSubscriptionUsage)
+            yield* options.onSubscriptionUsage(usage, hostAccountGeneration);
           return;
         }
         if (params.sessionId !== nativeSessionId) return;
@@ -1342,6 +1353,9 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
       );
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
+        hostAccountGeneration = options.usageAccountGeneration
+          ? yield* options.usageAccountGeneration
+          : 0;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const created = yield* Effect.acquireRelease(
           createMuseSdkHostEffect(

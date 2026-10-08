@@ -94,23 +94,32 @@ export function museUsageLimits(
   });
 }
 
-/** The account a report belongs to: the login's address or label, when a status check named one. */
+/** The login a status check names: its address or label. */
 export function museUsageAccount(auth: ServerProviderAuth): string | undefined {
   return auth.type === "accountLogin" ? (auth.email ?? auth.label) : undefined;
 }
 
 /**
- * Whether a report that arrived under `account` still belongs to the login a
- * status check found. A logout or another account's login drops it, so a
- * report never shows under an account it did not come from.
+ * Which login an instance's usage reports belong to. Reports name no account,
+ * so each one counts for the generation its host started under, and a logout
+ * or another login starts a new generation: a report from an older host is
+ * never shown under the account that replaced it.
  */
-export function museUsageStillApplies(
-  account: string | undefined,
+export interface MuseUsageAccount {
+  readonly generation: number;
+  /** The login last named, `null` once signed out, `undefined` before any status check names one. */
+  readonly identity: string | null | undefined;
+}
+
+export function nextMuseUsageAccount(
+  account: MuseUsageAccount,
   auth: ServerProviderAuth,
-): boolean {
-  if (auth.status === "unauthenticated") return false;
-  const current = museUsageAccount(auth);
-  return account === undefined || current === undefined || account === current;
+): MuseUsageAccount {
+  const identity = auth.status === "unauthenticated" ? null : museUsageAccount(auth);
+  if (identity === undefined || identity === account.identity) return account;
+  // The first login a check names is the one the hosts so far started under.
+  if (account.identity === undefined) return { ...account, identity };
+  return { generation: account.generation + 1, identity };
 }
 
 /**
@@ -123,7 +132,7 @@ export function museStatusUsageLimits(input: {
   readonly auth: ServerProviderAuth;
   readonly enabled: boolean;
   readonly observation: MuseUsageObservation | undefined;
-  /** This check dropped the kept report, for a logout or another account's login. */
+  /** This check dropped the kept report: a logout or another login started a new generation. */
   readonly dropped?: boolean;
   readonly nowMs: number;
 }): ServerProviderUsageLimits | undefined {

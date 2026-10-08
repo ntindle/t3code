@@ -207,6 +207,7 @@ const makeHarness = Effect.fnUntraced(function* (
     | "continuationRequests"
     | "onSubscriptionUsage"
     | "latestSubscriptionUsage"
+    | "usageAccountGeneration"
   > = {},
 ) {
   let hostCount = 0;
@@ -547,7 +548,8 @@ describe("MuseAdapterV2", () => {
   it.effect("hands Meta's subscription usage to the instance, with or without a turn", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
-      const reports: MuseSubscriptionUsage[] = [];
+      const reports: Array<readonly [MuseSubscriptionUsage, number]> = [];
+      let generation = 3;
       const harness = yield* makeHarness(
         fake,
         INSTANCE_ID,
@@ -555,15 +557,21 @@ describe("MuseAdapterV2", () => {
         undefined,
         undefined,
         runtimePolicy,
-        { onSubscriptionUsage: (usage) => Effect.sync(() => void reports.push(usage)) },
+        {
+          onSubscriptionUsage: (usage, accountGeneration) =>
+            Effect.sync(() => void reports.push([usage, accountGeneration])),
+          usageAccountGeneration: Effect.sync(() => generation),
+        },
       );
+      // A report counts for the generation its host started under, not the current one.
+      generation = 4;
       yield* fake.emitHostWide("usage/changed", SUBSCRIPTION_USAGE);
       yield* fake.emitHostWide("usage/changed", { window: "not usage" });
       const { nativeId } = yield* startConversation(harness, fake);
       yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
       const terminal = yield* harness.takeEvent("turn.terminal");
       assert.strictEqual(terminal.status, "completed");
-      assert.deepStrictEqual(reports, [SUBSCRIPTION_USAGE]);
+      assert.deepStrictEqual(reports, [[SUBSCRIPTION_USAGE, 3]]);
       assert.strictEqual(fake.closeCount(), 0);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );

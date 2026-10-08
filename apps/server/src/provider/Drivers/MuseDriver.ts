@@ -27,9 +27,9 @@ import type { MuseSubscriptionUsage } from "../museProtocol.ts";
 import { makeMuseEnvironment } from "../museSdk.ts";
 import {
   museStatusUsageLimits,
-  museUsageAccount,
-  museUsageStillApplies,
   museUsageWindows,
+  nextMuseUsageAccount,
+  type MuseUsageAccount,
 } from "../museUsageLimits.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import {
@@ -105,30 +105,39 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       // Meta reports subscription usage only with a model response, and a status
       // check makes none. Keep the newest report from any of this instance's
-      // sessions so a refresh re-derives the windows instead of dropping them,
-      // with the account it arrived under so a logout or another login drops it.
+      // sessions so a refresh re-derives the windows instead of dropping them.
+      // Each report counts for the account generation its host started under.
+      const usageAccount = yield* Ref.make<MuseUsageAccount>({
+        generation: 0,
+        identity: undefined,
+      });
       const latestUsage = yield* Ref.make<
-        { readonly usage: MuseSubscriptionUsage; readonly account: string | undefined } | undefined
+        { readonly usage: MuseSubscriptionUsage; readonly generation: number } | undefined
       >(undefined);
-      // Sessions report concurrently; one at a time keeps an older report from publishing last.
+      // Reports and status checks take turns, so an older report cannot publish after a
+      // newer one, and none publishes for a generation a check has just replaced.
       const usagePermit = yield* Semaphore.make(1);
       const withUsageLimits = (provider: ServerProviderDraft) =>
-        Effect.gen(function* () {
-          const { retained, dropped } = yield* Ref.modify(latestUsage, (current) => {
-            const drop =
-              current !== undefined && !museUsageStillApplies(current.account, provider.auth);
-            const kept = drop ? undefined : current;
-            return [{ retained: kept, dropped: drop }, kept] as const;
-          });
-          const usageLimits = museStatusUsageLimits({
-            auth: provider.auth,
-            enabled: provider.enabled,
-            observation: retained?.usage,
-            dropped,
-            nowMs: DateTime.toEpochMillis(yield* DateTime.now),
-          });
-          return usageLimits ? { ...provider, usageLimits } : provider;
-        });
+        usagePermit.withPermits(1)(
+          Effect.gen(function* () {
+            const { generation } = yield* Ref.updateAndGet(usageAccount, (account) =>
+              nextMuseUsageAccount(account, provider.auth),
+            );
+            const { retained, dropped } = yield* Ref.modify(latestUsage, (current) => {
+              const drop = current !== undefined && current.generation !== generation;
+              const kept = drop ? undefined : current;
+              return [{ retained: kept, dropped: drop }, kept] as const;
+            });
+            const usageLimits = museStatusUsageLimits({
+              auth: provider.auth,
+              enabled: provider.enabled,
+              observation: retained?.usage,
+              dropped,
+              nowMs: DateTime.toEpochMillis(yield* DateTime.now),
+            });
+            return usageLimits ? { ...provider, usageLimits } : provider;
+          }),
+        );
       const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
         resolveProviderMaintenanceCapabilitiesEffect(museMaintenance, {
           binaryPath: effectiveConfig.binaryPath,
@@ -201,18 +210,24 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         latestSubscriptionUsage: Ref.get(latestUsage).pipe(
           Effect.map((retained) => retained?.usage),
         ),
-        onSubscriptionUsage: (usage) =>
+        usageAccountGeneration: Ref.get(usageAccount).pipe(
+          Effect.map((account) => account.generation),
+        ),
+        onSubscriptionUsage: (usage, hostGeneration) =>
           usagePermit.withPermits(1)(
             Effect.gen(function* () {
-              const { auth } = yield* snapshot.getSnapshot;
+              const account = yield* Ref.get(usageAccount);
+              // A host from before a logout or another login reports for an account
+              // that is gone, and signed out there is no account to report for.
+              if (hostGeneration !== account.generation || account.identity === null) return;
               // Every session's host reports; an older report arriving late must not win.
               const newer = yield* Ref.modify(latestUsage, (previous) =>
                 previous && previous.usage.observedAtMs >= usage.observedAtMs
                   ? [false, previous]
-                  : [true, { usage, account: museUsageAccount(auth) }],
+                  : [true, { usage, generation: hostGeneration }],
               );
               // An API-key instance leaves the account to its hub; see museStatusUsageLimits.
-              if (!newer || auth.type === "apiKey") return;
+              if (!newer || (yield* snapshot.getSnapshot).auth.type === "apiKey") return;
               const now = yield* DateTime.now;
               yield* snapshot.applyUsageLimits({
                 windows: museUsageWindows(usage, DateTime.toEpochMillis(now)),

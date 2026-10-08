@@ -7,8 +7,8 @@ import {
   museUsageLimitResetAt,
   museUsageLimits,
   museUsageObservationFromHubSignals,
-  museUsageStillApplies,
   museUsageWindows,
+  nextMuseUsageAccount,
 } from "./museUsageLimits.ts";
 
 // What Meta reported after a reply on 2026-10-08, as Muse forwards it.
@@ -108,23 +108,31 @@ describe("Muse usage limits", () => {
     ).toBeUndefined();
   });
 
-  it("drops a kept report once its account logs out or another one signs in", () => {
+  it("starts a new account generation on a logout or another login", () => {
     const login = {
       status: "authenticated",
       type: "accountLogin",
       email: "a@example.com",
     } as const;
-    const account = museUsageAccount(login);
-    expect(account).toBe("a@example.com");
-    expect(museUsageStillApplies(account, login)).toBe(true);
-    expect(museUsageStillApplies(account, { ...login, email: "b@example.com" })).toBe(false);
-    expect(museUsageStillApplies(account, { status: "unauthenticated" })).toBe(false);
-    // Nothing names the login without account/read, so the report stays rather than being guessed away.
-    expect(museUsageStillApplies(account, { status: "unknown" })).toBe(true);
-    expect(museUsageStillApplies(undefined, login)).toBe(true);
-    expect(
-      museUsageAccount({ status: "authenticated", type: "apiKey", label: "API key" }),
-    ).toBeUndefined();
+    const apiKey = { status: "authenticated", type: "apiKey", label: "API key" } as const;
+    // The first login a check names is the one the hosts so far started under.
+    const named = nextMuseUsageAccount({ generation: 0, identity: undefined }, login);
+    expect(named).toEqual({ generation: 0, identity: "a@example.com" });
+    expect(nextMuseUsageAccount(named, login)).toBe(named);
+    // Nothing names the login without account/read, and an API key names no account.
+    expect(nextMuseUsageAccount(named, { status: "unknown" })).toBe(named);
+    expect(nextMuseUsageAccount(named, apiKey)).toBe(named);
+    expect(museUsageAccount(apiKey)).toBeUndefined();
+    const other = nextMuseUsageAccount(named, { ...login, email: "b@example.com" });
+    expect(other).toEqual({ generation: 1, identity: "b@example.com" });
+    const signedOut = nextMuseUsageAccount(other, { status: "unauthenticated" });
+    expect(signedOut).toEqual({ generation: 2, identity: null });
+    // Signing in again, even as the same account, starts another: a host from before the
+    // logout may hold either login.
+    expect(nextMuseUsageAccount(signedOut, { ...login, email: "b@example.com" })).toEqual({
+      generation: 3,
+      identity: "b@example.com",
+    });
   });
 
   it("recognises Muse's wording for a Meta quota refusal only", () => {
