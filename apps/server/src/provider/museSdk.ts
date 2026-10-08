@@ -1,6 +1,6 @@
-// @effect-diagnostics globalTimers:off nodeBuiltinImport:off
+// @effect-diagnostics globalTimers:off
 // The SDK owns process shutdown; native deadlines cover initialize before an Effect resource exists.
-// FileSystem.realPath is Node's JS realpath; museWorkspaceRoot needs the native one.
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- FileSystem.realPath is Node's JS realpath; museWorkspaceRoot needs the native one.
 import * as NodeFSP from "node:fs/promises";
 
 import {
