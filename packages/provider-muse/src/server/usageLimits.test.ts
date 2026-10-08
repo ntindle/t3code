@@ -9,7 +9,7 @@ import {
   museUsageObservationFromHubSignals,
   museUsageWindows,
   nextMuseUsageAccount,
-} from "./museUsageLimits.ts";
+} from "./usageLimits.ts";
 
 // What Meta reported after a reply on 2026-10-08, as Muse forwards it.
 const observation = {

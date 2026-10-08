@@ -1,16 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
-import { MuseSettings } from "@t3tools/contracts";
+import { MuseSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
-import type { MuseSdkHost } from "./museSdk.ts";
+import type { MuseSdkHost } from "./sdk.ts";
 import {
   museModelCapabilities,
   probeMuseHost,
   resolveMuseReasoningEffort,
-} from "./museModelCatalog.ts";
+} from "./modelCatalog.ts";
 
 const settings = Schema.decodeSync(MuseSettings)({});
 const host = (

@@ -8,7 +8,7 @@
  * responses. Windows are re-derived from it against the clock: a window whose
  * reset has passed starts over empty.
  *
- * @module provider/museUsageLimits
+ * @module provider-muse/server/usageLimits
  */
 import type {
   ServerProviderAuth,
@@ -22,7 +22,7 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "@t3tools/provider-core/server/usageLimits";
-import { LATEST_DATE_MS } from "./museProtocol.ts";
+import { LATEST_DATE_MS } from "./protocol.ts";
 
 const WEEK_MINS = 7 * 24 * 60;
 

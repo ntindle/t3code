@@ -1,4 +1,5 @@
-import type { MuseSettings, ServerProvider, ServerProviderModel } from "@t3tools/contracts";
+import { type ServerProvider, ServerProviderModel } from "@t3tools/contracts";
+import { MuseSettings } from "../settings.ts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -6,10 +7,10 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { ChildProcess } from "effect/process";
 
-import { createMuseSdkHost, makeMuseEnvironment } from "./museSdk.ts";
-import { parseMuseVersion } from "./museMaintenance.ts";
-import { museModelCapabilities, probeMuseHost } from "./museModelCatalog.ts";
-import type { MuseAccountState } from "./museProtocol.ts";
+import { createMuseSdkHost, makeMuseEnvironment } from "./sdk.ts";
+import { parseMuseVersion } from "./maintenance.ts";
+import { museModelCapabilities, probeMuseHost } from "./modelCatalog.ts";
+import type { MuseAccountState } from "./protocol.ts";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
