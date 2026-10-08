@@ -147,6 +147,8 @@ export const probeMuseHost = Effect.fn("probeMuseHost")(function* (
   });
   // A host without the experimental surface leaves the account unknown, as before,
   // and so does one that never answers: the models found above must not wait on it.
+  // The timeout ends the wait, not the request; the probe's host closes right after,
+  // which drops a late answer.
   const account = yield* Effect.tryPromise(() => host.connection.request("account/read", {})).pipe(
     Effect.flatMap(decodeAccountState),
     Effect.timeout(2_000),
