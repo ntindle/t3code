@@ -1,13 +1,19 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { spawnMspConnection, type MspHandshake, type SpawnedMspConnection } from "@muse-code/sdk";
 import { it } from "@effect/vitest";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { afterEach, describe, expect, vi } from "vite-plus/test";
 import {
   createMuseSdkHost,
   createMuseSdkHostEffect,
   makeMuseEnvironment,
   museApprovalMode,
+  museVerbatimPath,
+  museWorkspaceRoot,
   type MuseSdkHost,
 } from "./museSdk.ts";
 
@@ -262,5 +268,40 @@ describe("Muse SDK host", () => {
       expect(released).toBe(true);
       expect(host.close).toHaveBeenCalledOnce();
     }),
+  );
+});
+
+describe("Muse workspace root", () => {
+  it("writes Windows paths in their verbatim form", () => {
+    expect(museVerbatimPath("C:\\Users\\Person\\repo")).toBe("\\\\?\\C:\\Users\\Person\\repo");
+    expect(museVerbatimPath("\\\\server\\share\\repo")).toBe("\\\\?\\UNC\\server\\share\\repo");
+    expect(museVerbatimPath("\\\\?\\C:\\repo")).toBe("\\\\?\\C:\\repo");
+  });
+
+  it.effect("leaves the root alone off Windows", () =>
+    Effect.gen(function* () {
+      expect(yield* museWorkspaceRoot("/workspace/repo")).toBe("/workspace/repo");
+    }).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+  );
+
+  it.effect("keeps a Windows root it cannot resolve, in verbatim form", () =>
+    Effect.gen(function* () {
+      expect(yield* museWorkspaceRoot("C:\\definitely-missing\\repo")).toBe(
+        "\\\\?\\C:\\definitely-missing\\repo",
+      );
+    }).pipe(Effect.provideService(HostProcessPlatform, "win32")),
+  );
+
+  // FileSystem.realPath keeps the case it is given; Muse rejects a root whose case differs from the disk's.
+  it.effect("fixes the case of a Windows root natively", () =>
+    Effect.gen(function* () {
+      if ((yield* HostProcessPlatform) !== "win32") return;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const created = yield* fs.makeTempDirectoryScoped({ prefix: "MuseRoot-" });
+      const root = yield* museWorkspaceRoot(created.toLowerCase());
+      expect(root.startsWith("\\\\?\\")).toBe(true);
+      expect(root.endsWith(`\\${path.basename(created)}`)).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

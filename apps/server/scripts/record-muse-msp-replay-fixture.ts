@@ -27,6 +27,7 @@ import { TestClock } from "effect/testing";
 import {
   connectMuseTransport,
   layer as museReplayLayer,
+  materializeMuseReplayWorkspace,
   MUSE_MSP_REPLAY_PROTOCOL,
   MUSE_PROVIDER_KIND,
   museRecordLabel,
@@ -34,12 +35,11 @@ import {
 } from "../src/orchestration-v2/Adapters/MuseAdapterV2.testkit.ts";
 import * as IdAllocator from "../src/orchestration-v2/IdAllocator.ts";
 import { parseMuseVersion } from "../src/provider/museMaintenance.ts";
-import { makeMuseEnvironment, museServeArgs } from "../src/provider/museSdk.ts";
+import { makeMuseEnvironment, museServeArgs, museWorkspaceRoot } from "../src/provider/museSdk.ts";
 import { provideDeterministicTestRuntime } from "../src/orchestration-v2/testkit/DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "../src/orchestration-v2/testkit/fixtures/index.ts";
 import { materializeFixtureInput } from "../src/orchestration-v2/testkit/fixtures/shared.ts";
 import { runOrchestratorV2ProviderReplayScenario } from "../src/orchestration-v2/testkit/ProviderReplayHarness.ts";
-import { materializeReplayTranscriptWorkspace } from "../src/orchestration-v2/testkit/ReplayTranscriptNdjson.ts";
 import {
   checkpointWorkspace,
   makeCheckpointWorkspace,
@@ -221,6 +221,7 @@ const record = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     fs.remove(workspace, { recursive: true, force: true }).pipe(Effect.ignore),
   );
+  const canonicalWorkspace = yield* fs.realPath(workspace);
 
   const entries: Array<ProviderReplayEntry> = [];
   const commandIds: Array<Array<string>> = [];
@@ -273,7 +274,12 @@ const record = Effect.gen(function* () {
       model: variant.modelSelection.model,
       commandIds,
     },
-    entries: normalizeEntries(entries, [yield* fs.realPath(workspace), workspace]),
+    // The verbatim root first: it contains the canonical path.
+    entries: normalizeEntries(entries, [
+      yield* museWorkspaceRoot(canonicalWorkspace),
+      canonicalWorkspace,
+      workspace,
+    ]),
   } satisfies ProviderReplayTranscript;
 
   yield* Effect.gen(function* () {
@@ -283,7 +289,7 @@ const record = Effect.gen(function* () {
       {
         name: `${fixture.name}/muse:verify`,
         transcript: yield* MuseOrchestratorReplayHarness.decodeTranscript(
-          materializeReplayTranscriptWorkspace(transcript, yield* fs.realPath(replayWorkspace)),
+          yield* materializeMuseReplayWorkspace(transcript, replayWorkspace),
         ),
         commands: materialized.commands,
         steps: materialized.steps,

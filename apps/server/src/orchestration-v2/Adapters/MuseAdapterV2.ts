@@ -63,6 +63,7 @@ import {
 import {
   createMuseSdkHostEffect,
   museApprovalMode,
+  museWorkspaceRoot,
   type createMuseSdkHost,
   type MuseSdkHost,
 } from "../../provider/museSdk.ts";
@@ -293,6 +294,7 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
       const cwd = yield* options.fileSystem
         .realPath(requestedCwd)
         .pipe(Effect.orElseSucceed(() => requestedCwd));
+      const workspaceRoot = yield* museWorkspaceRoot(cwd);
       const now = yield* DateTime.now;
       let session: OrchestrationV2ProviderSession = {
         id: input.providerSessionId,
@@ -1688,7 +1690,7 @@ export function makeMuseAdapterV2(options: MuseAdapterV2Options): ProviderAdapte
                 displayText: turnInput.message.text || "Image attachment",
                 // A resumed session keeps the root it was created with; pin it to
                 // this thread's current checkout so edits land where T3 tracks them.
-                workspaceRoots: [cwd],
+                workspaceRoots: [workspaceRoot],
                 ifBusy: "queue",
                 ...(effort ? { reasoningEffort: effort } : {}),
               },

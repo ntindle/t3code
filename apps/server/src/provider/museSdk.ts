@@ -1,5 +1,8 @@
-// @effect-diagnostics globalTimers:off
+// @effect-diagnostics globalTimers:off nodeBuiltinImport:off
 // The SDK owns process shutdown; native deadlines cover initialize before an Effect resource exists.
+// FileSystem.realPath is Node's JS realpath; museWorkspaceRoot needs the native one.
+import * as NodeFSP from "node:fs/promises";
+
 import {
   spawnMspConnection,
   type Connection,
@@ -7,6 +10,7 @@ import {
   type SpawnedMspConnection,
 } from "@muse-code/sdk";
 import type { RuntimeMode } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 
 export interface MuseSdkHost {
@@ -53,6 +57,28 @@ export function makeMuseEnvironment(
     MUSE_NO_AUTO_UPDATE: "1",
   };
 }
+
+/** Windows' verbatim form of a canonical path: `\\?\C:\…`, or `\\?\UNC\server\share\…`. */
+export function museVerbatimPath(path: string): string {
+  if (path.startsWith("\\\\?\\")) return path;
+  return path.startsWith("\\\\") ? `\\\\?\\UNC\\${path.slice(2)}` : `\\\\?\\${path}`;
+}
+
+/**
+ * A workspace root in the form `turn/start` accepts. On Windows Muse rejects
+ * anything but the verbatim canonical path, true case and long names
+ * included, so resolve with the native realpath, which unlike
+ * FileSystem.realPath fixes case and expands 8.3 names. Muse itself still
+ * starts in the plain path: the `muse.cmd` launcher runs under cmd.exe, which
+ * cannot use a verbatim directory.
+ */
+export const museWorkspaceRoot = Effect.fn("museWorkspaceRoot")(function* (path: string) {
+  if ((yield* HostProcessPlatform) !== "win32") return path;
+  const canonical = yield* Effect.tryPromise(() => NodeFSP.realpath(path)).pipe(
+    Effect.orElseSucceed(() => path),
+  );
+  return museVerbatimPath(canonical);
+});
 
 export function museApprovalMode(runtimeMode: RuntimeMode) {
   return runtimeMode === "full-access" ? "allowAll" : "promptUnmatched";
