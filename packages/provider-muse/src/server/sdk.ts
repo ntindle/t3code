@@ -10,7 +10,8 @@ import {
   type SpawnedMspConnection,
 } from "@muse-code/sdk";
 import type { RuntimeMode } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 
 export interface MuseSdkHost {
@@ -31,8 +32,16 @@ export interface MuseSdkHost {
   readonly close: () => Promise<void>;
 }
 
+/** The program that starts Muse, and the arguments that go before `serve` and its flags. */
+export interface MuseLaunch {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+}
+
 export interface MuseSdkHostOptions {
   readonly binaryPath: string;
+  /** How to start `binaryPath`, from `museLaunch`; without it the binary path is run as is. */
+  readonly launch?: MuseLaunch;
   readonly cwd?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly runtimeMode?: RuntimeMode;
@@ -81,6 +90,42 @@ export const museWorkspaceRoot = Effect.fn("museWorkspaceRoot")(function* (path:
   return museVerbatimPath(canonical);
 });
 
+/** A Windows environment variable; their names are case-insensitive there. */
+function windowsEnvironmentValue(environment: NodeJS.ProcessEnv, name: string) {
+  const key = Object.keys(environment).find(
+    (candidate) => candidate.toUpperCase() === name.toUpperCase(),
+  );
+  return key === undefined ? undefined : environment[key];
+}
+
+/**
+ * How to start Muse. The SDK spawns without a shell, which finds the `muse`
+ * launcher on PATH everywhere but Windows. There Node neither looks a bare
+ * `muse` up with PATHEXT (ENOENT) nor runs a `.cmd` file such as Muse's own
+ * launcher (EINVAL) without a shell, so resolve the binary like any other
+ * command and run a `.cmd` or `.bat` under cmd.exe. Node quotes a path with
+ * spaces, which cmd keeps unless the path also holds `&`, `@` or `^`; a path
+ * without spaces gets cmd's metacharacters escaped instead.
+ */
+export const museLaunch = Effect.fn("museLaunch")(function* (
+  binaryPath: string,
+  environment?: NodeJS.ProcessEnv,
+): Effect.fn.Return<MuseLaunch> {
+  if ((yield* HostProcessPlatform) !== "win32") return { command: binaryPath, args: [] };
+  const env = environment ?? (yield* HostProcessEnvironment);
+  const resolveExecutable = yield* SpawnExecutableResolution;
+  const resolved = resolveExecutable(binaryPath, "win32", env) ?? binaryPath;
+  if (!/\.(?:cmd|bat)$/i.test(resolved)) return { command: resolved, args: [] };
+  const systemRoot = windowsEnvironmentValue(env, "SystemRoot");
+  return {
+    command:
+      windowsEnvironmentValue(env, "ComSpec") ??
+      (systemRoot ? `${systemRoot}\\System32\\cmd.exe` : "cmd.exe"),
+    // /d skips cmd's AutoRun commands, which could write into Muse's stdout.
+    args: ["/d", "/c", /\s/.test(resolved) ? resolved : resolved.replace(/[()&<>@^|]/g, "^$&")],
+  };
+});
+
 export function museApprovalMode(runtimeMode: RuntimeMode) {
   return runtimeMode === "full-access" ? "allowAll" : "promptUnmatched";
 }
@@ -114,9 +159,10 @@ export async function createMuseSdkHost(
   spawn: typeof spawnMspConnection = spawnMspConnection,
 ): Promise<MuseSdkHost> {
   options.signal?.throwIfAborted();
+  const launch = options.launch ?? { command: options.binaryPath, args: [] };
   const handshake = spawn({
-    command: options.binaryPath,
-    args: museServeArgs(options),
+    command: launch.command,
+    args: [...launch.args, ...museServeArgs(options)],
     ...(options.cwd ? { cwd: options.cwd } : {}),
     // Callers pass an environment already built with makeMuseEnvironment.
     env: options.environment ?? makeMuseEnvironment(),
@@ -173,9 +219,10 @@ export const createMuseSdkHostEffect = Effect.fn("createMuseSdkHostEffect")(func
   options: Omit<MuseSdkHostOptions, "signal">,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
 ) {
+  const launch = options.launch ?? (yield* museLaunch(options.binaryPath, options.environment));
   let startup: Promise<MuseSdkHost> | undefined;
   return yield* Effect.tryPromise((signal) => {
-    startup = createHost({ ...options, signal });
+    startup = createHost({ ...options, launch, signal });
     return startup;
   }).pipe(
     Effect.onInterrupt(() =>

@@ -36,6 +36,7 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
   makeMuseEnvironment,
+  museLaunch,
   museServeArgs,
   museWorkspaceRoot,
   parseMuseVersion,
@@ -67,6 +68,8 @@ if (fixture === undefined || variant === undefined) {
 }
 
 const museBinary = process.env.T3_MUSE_BIN ?? "muse";
+// Started as T3 starts it, so Windows needs no T3_MUSE_BIN for Muse's `muse.cmd` launcher.
+const museStart = Effect.runSync(museLaunch(museBinary));
 const home = process.env.HOME ?? "";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -148,7 +151,7 @@ function makeRecordingCreateHost(
     };
     record("expect_outbound", { type: "host_start", args });
     // The binary named by T3_MUSE_BIN, so the recorded version matches what ran.
-    const child = NodeChildProcess.spawn(museBinary, args, {
+    const child = NodeChildProcess.spawn(museStart.command, [...museStart.args, ...args], {
       cwd: options.cwd,
       env: options.environment ?? makeMuseEnvironment(),
       stdio: ["pipe", "pipe", "inherit"],
@@ -209,7 +212,11 @@ function makeRecordingCreateHost(
 }
 
 const readMuseVersion = Effect.sync(() => {
-  const output = NodeChildProcess.execFileSync(museBinary, ["--version"], { encoding: "utf8" });
+  const output = NodeChildProcess.execFileSync(
+    museStart.command,
+    [...museStart.args, "--version"],
+    { encoding: "utf8" },
+  );
   return parseMuseVersion(output) ?? output.trim();
 });
 

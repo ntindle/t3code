@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { spawnMspConnection, type MspHandshake, type SpawnedMspConnection } from "@muse-code/sdk";
 import { it } from "@effect/vitest";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -12,6 +13,7 @@ import {
   createMuseSdkHostEffect,
   makeMuseEnvironment,
   museApprovalMode,
+  museLaunch,
   museVerbatimPath,
   museWorkspaceRoot,
   type MuseSdkHost,
@@ -268,6 +270,83 @@ describe("Muse SDK host", () => {
       expect(released).toBe(true);
       expect(host.close).toHaveBeenCalledOnce();
     }),
+  );
+});
+
+describe("Muse launch", () => {
+  const CMD = "C:\\Windows\\system32\\cmd.exe";
+  const onWindows = (resolved: string | undefined, env: NodeJS.ProcessEnv = { ComSpec: CMD }) =>
+    museLaunch("muse", env).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(SpawnExecutableResolution, () => resolved),
+    );
+
+  it.effect("starts the binary itself off Windows", () =>
+    Effect.gen(function* () {
+      expect(yield* museLaunch("muse")).toEqual({ command: "muse", args: [] });
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(SpawnExecutableResolution, () => {
+        throw new Error("Nothing is resolved off Windows.");
+      }),
+    ),
+  );
+
+  // Node spawns neither a bare `muse` nor a `.cmd` file without a shell on Windows.
+  it.effect("runs an exe directly and a launcher script under cmd.exe on Windows", () =>
+    Effect.gen(function* () {
+      expect(yield* onWindows("C:\\Muse\\muse.exe")).toEqual({
+        command: "C:\\Muse\\muse.exe",
+        args: [],
+      });
+      // Node quotes a path with spaces, and cmd keeps those quotes.
+      const spaced = "C:\\Users\\Jane Doe\\AppData\\Local\\Programs\\muse\\muse.cmd";
+      expect(yield* onWindows(spaced)).toEqual({ command: CMD, args: ["/d", "/c", spaced] });
+      // Unquoted, cmd would split the command at `&`.
+      expect(yield* onWindows("C:\\Users\\R&D(1)\\muse.cmd")).toEqual({
+        command: CMD,
+        args: ["/d", "/c", "C:\\Users\\R^&D^(1^)\\muse.cmd"],
+      });
+      expect((yield* onWindows("C:\\Muse\\muse.bat", { SYSTEMROOT: "C:\\Windows" })).command).toBe(
+        "C:\\Windows\\System32\\cmd.exe",
+      );
+      // A binary that cannot be found is spawned as given, so the failure reports it.
+      expect(yield* onWindows(undefined)).toEqual({ command: "muse", args: [] });
+    }),
+  );
+
+  it.effect("starts Muse's Windows launcher through cmd.exe", () =>
+    Effect.gen(function* () {
+      const fake = mockSpawn();
+      const starting = yield* Effect.forkChild(
+        createMuseSdkHostEffect({
+          binaryPath: "muse",
+          environment: { ComSpec: CMD },
+          readOnly: true,
+        }),
+      );
+      yield* Effect.promise(() => fake.initializing.promise);
+      const spawned = vi.mocked(spawnMspConnection).mock.lastCall?.[0];
+      fake.startup.resolve(fake.ready);
+      const host = yield* Fiber.join(starting);
+      fake.shutdown.resolve({ code: 0, signal: null });
+      yield* Effect.promise(() => host.close());
+      expect(spawned).toMatchObject({
+        command: CMD,
+        args: [
+          "/d",
+          "/c",
+          "C:\\Muse\\muse.cmd",
+          "serve",
+          "--disable-shell",
+          "--disable-write",
+          "--no-session-log",
+        ],
+      });
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(SpawnExecutableResolution, () => "C:\\Muse\\muse.cmd"),
+    ),
   );
 });
 
