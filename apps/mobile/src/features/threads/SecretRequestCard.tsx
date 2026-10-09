@@ -11,8 +11,10 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
+import * as Clipboard from "expo-clipboard";
 import { useRef, useState } from "react";
 import { Pressable, View, type ColorValue } from "react-native";
+import { withUniwind } from "uniwind";
 
 import { SymbolView, type AppSymbolName } from "../../components/AppSymbol";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
@@ -27,6 +29,7 @@ import { RequestActionButton } from "./RequestActionButton";
  */
 const LOCK_SYMBOL: AppSymbolName = { ios: "lock", android: "lock" };
 const PRIVATE_SYMBOL: AppSymbolName = { ios: "checkmark.shield", android: "lock" };
+const PASTE_SYMBOL: AppSymbolName = { ios: "doc.on.clipboard", android: "content_paste" };
 
 export function SecretRequestCard(props: {
   readonly environmentId: EnvironmentId;
@@ -87,18 +90,26 @@ function PendingSecretRequestForm(props: {
     inFlight.current = true;
     setSubmitting(true);
     setError(null);
+    // Empty the field before the card can leave the screen: iOS offers to save
+    // whatever a password field holds when it goes, and this is not a login.
+    const typed = secret;
+    setSecret("");
     const result = await answer({ environmentId: props.environmentId, input }).finally(() => {
       inFlight.current = false;
       setSubmitting(false);
     });
-    if (result._tag === "Success") {
-      // The card switches to its answered row once the item updates.
-      setSecret("");
-      return;
-    }
+    // On success the card switches to its answered row once the item updates.
+    if (result._tag === "Success") return;
+    setSecret(typed);
     if (!isAtomCommandInterrupted(result)) {
       setError(secretRequestFailureMessage(squashAtomCommandFailure(result)));
     }
+  };
+
+  const paste = (text: string) => {
+    if (inFlight.current || text.length === 0) return;
+    setSecret(text);
+    setError(null);
   };
 
   // Same hierarchy as web: what is asked, why, the field, then the promise
@@ -111,22 +122,33 @@ function PendingSecretRequestForm(props: {
           <Text className="font-sans text-sm leading-5 text-foreground-muted">{item.reason}</Text>
         ) : null}
       </View>
-      <TextInput
-        accessibilityLabel={item.label}
-        placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-        value={secret}
-        onChangeText={setSecret}
-        editable={!submitting}
-        secureTextEntry
-        autoCorrect={false}
-        autoCapitalize="none"
-        autoComplete="off"
-        textContentType="none"
-        importantForAutofill="no"
-        spellCheck={false}
-        returnKeyType="done"
-        onSubmitEditing={() => void send({ type: "save", secret })}
-      />
+      <View className="justify-center">
+        <TextInput
+          className="pr-14"
+          accessibilityLabel={item.label}
+          placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+          value={secret}
+          onChangeText={setSecret}
+          editable={!submitting}
+          secureTextEntry
+          autoCorrect={false}
+          autoCapitalize="none"
+          // iOS reads only textContentType; as a password field it offers saved
+          // passwords above the keyboard. Android reads autoComplete and
+          // importantForAutofill, which keep its autofill off.
+          autoComplete="off"
+          textContentType="password"
+          importantForAutofill="no"
+          spellCheck={false}
+          returnKeyType="done"
+          onSubmitEditing={() => void send({ type: "save", secret })}
+        />
+        <SecretPasteButton
+          disabled={submitting}
+          onPaste={paste}
+          onError={() => setError("Could not read the clipboard.")}
+        />
+      </View>
       {error !== null ? (
         <Text
           accessibilityRole="alert"
@@ -165,6 +187,52 @@ function PendingSecretRequestForm(props: {
           <Text className="font-sans text-xs text-foreground-muted">Decline</Text>
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+const ThemedClipboardPasteButton = withUniwind(Clipboard.ClipboardPasteButton);
+
+/**
+ * Paste button inside the field's trailing edge. On iOS it is the system paste
+ * control, which reads the clipboard without the paste permission alert.
+ */
+function SecretPasteButton(props: {
+  readonly disabled: boolean;
+  readonly onPaste: (text: string) => void;
+  readonly onError: () => void;
+}) {
+  return (
+    <View className="absolute inset-y-0 right-1.5 justify-center">
+      {Clipboard.isPasteButtonAvailable ? (
+        // UIPasteControl draws nothing without an explicit size.
+        <ThemedClipboardPasteButton
+          className="size-10"
+          acceptedContentTypes={["plain-text"]}
+          displayMode="iconOnly"
+          backgroundColorClassName="accent-input"
+          foregroundColorClassName="accent-icon"
+          onPress={(data) => {
+            if (data.type === "text") props.onPaste(data.text);
+          }}
+        />
+      ) : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Paste"
+          accessibilityState={{ disabled: props.disabled }}
+          disabled={props.disabled}
+          className="size-10 items-center justify-center rounded-full active:opacity-60 disabled:opacity-50"
+          onPress={() => void Clipboard.getStringAsync().then(props.onPaste, props.onError)}
+        >
+          <SymbolView
+            name={PASTE_SYMBOL}
+            size={18}
+            tintColorClassName="accent-icon"
+            type="monochrome"
+          />
+        </Pressable>
+      )}
     </View>
   );
 }

@@ -11,13 +11,15 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
-import { CheckIcon, LockIcon, MinusIcon, ShieldCheckIcon } from "lucide-react";
+import { CheckIcon, ClipboardPasteIcon, LockIcon, MinusIcon, ShieldCheckIcon } from "lucide-react";
 import { useId, useRef, useState, type FormEvent } from "react";
 
+import { readTextFromClipboard } from "../../hooks/useCopyToClipboard";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkLogRow } from "./WorkLog";
 
 /**
@@ -101,6 +103,24 @@ function PendingSecretRequestForm(props: {
     void send({ type: "save", secret });
   };
 
+  // The clipboard API exists only in a secure context (the desktop app, HTTPS
+  // or localhost); elsewhere the field still takes a paste.
+  const canPaste = typeof navigator.clipboard?.readText === "function";
+
+  const paste = async () => {
+    let text: string;
+    try {
+      text = await readTextFromClipboard("secret");
+    } catch {
+      setError("Could not read the clipboard.");
+      return;
+    }
+    if (inFlight.current || text.length === 0) return;
+    setSecret(text);
+    setError(null);
+    document.getElementById(inputId)?.focus();
+  };
+
   // Same hierarchy as a chat card: what is asked, why, the field, then the
   // promise about where the value goes.
   return (
@@ -125,27 +145,50 @@ function PendingSecretRequestForm(props: {
       </div>
       <div className="flex min-w-0 items-center gap-2">
         <div className="min-w-0 flex-1">
-          <Input
-            id={inputId}
-            // Masked text rather than a password field: browsers offer to
-            // save any submitted password, and this is not a login.
-            type="text"
-            className="[-webkit-text-security:disc]"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            // Password managers otherwise offer to save or fill this field.
-            data-1p-ignore
-            data-lpignore="true"
-            data-bwignore
-            placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-            value={secret}
-            disabled={submitting}
-            aria-invalid={error !== null || undefined}
-            aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
-            onChange={(event) => setSecret(event.currentTarget.value)}
-          />
+          <InputGroup>
+            <InputGroupInput
+              id={inputId}
+              // Masked text rather than a password field: browsers offer to
+              // save any submitted password, and this is not a login.
+              type="text"
+              className="[-webkit-text-security:disc]"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              // Password managers otherwise offer to save or fill this field.
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
+              placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+              value={secret}
+              disabled={submitting}
+              aria-invalid={error !== null || undefined}
+              aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
+              onChange={(event) => setSecret(event.currentTarget.value)}
+            />
+            {canPaste ? (
+              <InputGroupAddon align="inline-end">
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="Paste from clipboard"
+                        disabled={submitting}
+                        onClick={() => void paste()}
+                      />
+                    }
+                  >
+                    <ClipboardPasteIcon />
+                  </TooltipTrigger>
+                  <TooltipPopup>Paste from clipboard</TooltipPopup>
+                </Tooltip>
+              </InputGroupAddon>
+            ) : null}
+          </InputGroup>
         </div>
         <Button type="submit" disabled={submitting || secret.trim().length === 0}>
           Save securely

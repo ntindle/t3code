@@ -30,6 +30,7 @@ import IconBrain from "@tabler/icons-react-native/IconBrain";
 import IconCamera from "@tabler/icons-react-native/IconCamera";
 import IconChartBar from "@tabler/icons-react-native/IconChartBar";
 import IconCheck from "@tabler/icons-react-native/IconCheck";
+import IconClipboard from "@tabler/icons-react-native/IconClipboard";
 import IconCloud from "@tabler/icons-react-native/IconCloud";
 import IconChevronDown from "@tabler/icons-react-native/IconChevronDown";
 import IconChevronLeft from "@tabler/icons-react-native/IconChevronLeft";
@@ -254,6 +255,7 @@ const ANDROID_ICON_BY_MATERIAL_NAME = {
   close: IconX,
   construction: IconHammer,
   content_copy: IconCopy,
+  content_paste: IconClipboard,
   desktop_windows: IconDeviceDesktop,
   edit: IconEdit,
   error: IconAlertCircle,
