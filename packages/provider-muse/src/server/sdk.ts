@@ -104,8 +104,8 @@ function windowsEnvironmentValue(environment: NodeJS.ProcessEnv, name: string) {
  * `muse` up with PATHEXT (ENOENT) nor runs a `.cmd` file such as Muse's own
  * launcher (EINVAL) without a shell, so resolve the binary like any other
  * command and run a `.cmd` or `.bat` under cmd.exe. Node quotes a path with
- * spaces, which cmd keeps unless the path also holds `&`, `@` or `^`; a path
- * without spaces gets cmd's metacharacters escaped instead.
+ * spaces, and inside those quotes cmd takes every character literally. A path
+ * without spaces is not quoted, so its metacharacters are escaped instead.
  */
 export const museLaunch = Effect.fn("museLaunch")(function* (
   binaryPath: string,
@@ -121,8 +121,14 @@ export const museLaunch = Effect.fn("museLaunch")(function* (
     command:
       windowsEnvironmentValue(env, "ComSpec") ??
       (systemRoot ? `${systemRoot}\\System32\\cmd.exe` : "cmd.exe"),
-    // /d skips cmd's AutoRun commands, which could write into Muse's stdout.
-    args: ["/d", "/c", /\s/.test(resolved) ? resolved : resolved.replace(/[()&<>@^|]/g, "^$&")],
+    // /d skips cmd's AutoRun commands, which could write into Muse's stdout. cmd /c drops
+    // the quotes from a command that starts with one and holds `&`, `@`, `^` or a
+    // parenthesis, so a quoted path follows a bare `@` (echo off), which keeps them.
+    args: [
+      "/d",
+      "/c",
+      ...(/\s/.test(resolved) ? ["@", resolved] : [resolved.replace(/[()&<>@^|]/g, "^$&")]),
+    ],
   };
 });
 

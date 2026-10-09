@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- The Muse SDK spawns with Node's child_process, so the launch test quotes arguments the same way.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { spawnMspConnection, type MspHandshake, type SpawnedMspConnection } from "@muse-code/sdk";
 import { it } from "@effect/vitest";
@@ -299,9 +301,14 @@ describe("Muse launch", () => {
         command: "C:\\Muse\\muse.exe",
         args: [],
       });
-      // Node quotes a path with spaces, and cmd keeps those quotes.
+      // Node quotes a path with spaces, and the `@` before it keeps cmd from dropping the quotes.
       const spaced = "C:\\Users\\Jane Doe\\AppData\\Local\\Programs\\muse\\muse.cmd";
-      expect(yield* onWindows(spaced)).toEqual({ command: CMD, args: ["/d", "/c", spaced] });
+      expect(yield* onWindows(spaced)).toEqual({ command: CMD, args: ["/d", "/c", "@", spaced] });
+      const spacedAmpersand = "C:\\Users\\R&D Team\\AppData\\Local\\Programs\\muse\\muse.cmd";
+      expect(yield* onWindows(spacedAmpersand)).toEqual({
+        command: CMD,
+        args: ["/d", "/c", "@", spacedAmpersand],
+      });
       // Unquoted, cmd would split the command at `&`.
       expect(yield* onWindows("C:\\Users\\R&D(1)\\muse.cmd")).toEqual({
         command: CMD,
@@ -313,6 +320,30 @@ describe("Muse launch", () => {
       // A binary that cannot be found is spawned as given, so the failure reports it.
       expect(yield* onWindows(undefined)).toEqual({ command: "muse", args: [] });
     }),
+  );
+
+  // cmd's quote rules only show with a real cmd.exe, spawning as the SDK does.
+  it.effect("starts a real launcher from a folder with spaces and cmd metacharacters", () =>
+    Effect.gen(function* () {
+      if ((yield* HostProcessPlatform) !== "win32") return;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const folder = path.join(
+        yield* fs.makeTempDirectoryScoped({ prefix: "MuseLaunch-" }),
+        "R&D Team (x) @ ^y",
+      );
+      yield* fs.makeDirectory(folder);
+      const launcher = path.join(folder, "muse.cmd");
+      // Records its arguments next to itself; reaching the file at all proves cmd found it.
+      yield* fs.writeFileString(launcher, '@echo off\r\necho %*>"%~dp0args.txt"\r\n');
+      const launch = yield* museLaunch(launcher);
+      const run = NodeChildProcess.spawnSync(launch.command, [...launch.args, "serve", "--x"], {
+        cwd: folder,
+        encoding: "utf8",
+      });
+      expect(run.status, run.stderr).toBe(0);
+      expect((yield* fs.readFileString(path.join(folder, "args.txt"))).trim()).toBe("serve --x");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("starts Muse's Windows launcher through cmd.exe", () =>
