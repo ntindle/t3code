@@ -289,6 +289,13 @@ describe("Muse workspace root", () => {
       expect(yield* museWorkspaceRoot("C:\\definitely-missing\\repo")).toBe(
         "\\\\?\\C:\\definitely-missing\\repo",
       );
+      // `/` would be taken literally inside a verbatim path.
+      expect(yield* museWorkspaceRoot("C:/definitely-missing/repo")).toBe(
+        "\\\\?\\C:\\definitely-missing\\repo",
+      );
+      expect(yield* museWorkspaceRoot("//server/share/missing")).toBe(
+        "\\\\?\\UNC\\server\\share\\missing",
+      );
     }).pipe(Effect.provideService(HostProcessPlatform, "win32")),
   );
 

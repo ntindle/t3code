@@ -75,7 +75,8 @@ export function museVerbatimPath(path: string): string {
 export const museWorkspaceRoot = Effect.fn("museWorkspaceRoot")(function* (path: string) {
   if ((yield* HostProcessPlatform) !== "win32") return path;
   const canonical = yield* Effect.tryPromise(() => NodeFSP.realpath(path)).pipe(
-    Effect.orElseSucceed(() => path),
+    // A verbatim path takes `/` literally, so an unresolved root needs Windows separators.
+    Effect.orElseSucceed(() => path.replaceAll("/", "\\")),
   );
   return museVerbatimPath(canonical);
 });
