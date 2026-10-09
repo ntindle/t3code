@@ -16,18 +16,20 @@ const ACTIONS: MenuAction[] = [
 export function BrowserClipboardMenu(props: {
   readonly onPaste: () => void;
   readonly onCopy: () => void;
-  readonly onFillPassword: () => void;
+  /** Null on a page without an http(s) origin, which no login belongs to. */
+  readonly onFillPassword: (() => void) | null;
 }) {
+  const { onFillPassword } = props;
   return (
     <ControlPillMenu
       accessible
       accessibilityLabel="Clipboard and passwords"
       accessibilityRole="button"
-      actions={ACTIONS}
+      actions={onFillPassword ? ACTIONS : ACTIONS.filter((action) => action.id !== "password")}
       onPressAction={({ nativeEvent }) => {
         if (nativeEvent.event === "paste") props.onPaste();
         else if (nativeEvent.event === "copy") props.onCopy();
-        else if (nativeEvent.event === "password") props.onFillPassword();
+        else if (nativeEvent.event === "password") onFillPassword?.();
       }}
     >
       <ControlPill

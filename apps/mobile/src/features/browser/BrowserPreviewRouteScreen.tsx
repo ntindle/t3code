@@ -22,7 +22,7 @@ import { useAppearancePreferences } from "../settings/appearance/AppearancePrefe
 import { BrowserClipboardMenu } from "./BrowserClipboardMenu";
 import { BrowserPasswordFill, type BrowserLogin } from "./BrowserPasswordFill";
 import { BrowserTabMenu } from "./BrowserTabMenu";
-import { browserTabTitle, browserTabUrl, latestBrowserTab } from "./browserTabs";
+import { browserTabOrigin, browserTabTitle, browserTabUrl, latestBrowserTab } from "./browserTabs";
 import {
   PreviewStreamWebView,
   type PreviewPictureInPictureState,
@@ -93,7 +93,8 @@ function BrowserPreviewScreen({
   const [canControl, setCanControl] = useState(false);
   // A page field has this device's keyboard.
   const [typing, setTyping] = useState(false);
-  const [fillingPassword, setFillingPassword] = useState(false);
+  // The site a saved login goes to, fixed when the fill card opens; null while it is closed.
+  const [fillOrigin, setFillOrigin] = useState<string | null>(null);
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
   const streamRef = useRef<PreviewStreamRef>(null);
   const { tabs, loaded } = useThreadServerBrowserTabs({ environmentId, threadId, enabled: true });
@@ -102,7 +103,7 @@ function BrowserPreviewScreen({
   // Pin the fallback so another tab's activity does not switch the view.
   if (tabId !== null && tabId !== selectedTabId) {
     setPictureInPicture(NO_PICTURE_IN_PICTURE);
-    setFillingPassword(false);
+    setFillOrigin(null);
     setSelectedTabId(tabId);
   }
   useEffect(() => {
@@ -120,23 +121,27 @@ function BrowserPreviewScreen({
   }, []);
   const selectTab = (next: string) => {
     setPictureInPicture(NO_PICTURE_IN_PICTURE);
-    setFillingPassword(false);
+    setFillOrigin(null);
     setSelectedTabId(next);
   };
   // System picture in picture keeps showing this stream after the app leaves the foreground.
   const live = (focused && foreground) || pictureInPicture.active;
   const send = (input: PreviewStreamInput) => streamRef.current?.command(input);
   const pasteFromClipboard = async () => {
+    // Reading can wait on the paste prompt; if the tab changes meanwhile, nothing is pasted.
+    const stream = streamRef.current;
     const text = await Clipboard.getStringAsync().catch(() => "");
-    if (text) send({ type: "text", text });
+    if (text && stream && streamRef.current === stream) stream.command({ type: "text", text });
   };
   const copySelection = () => {
     send({ type: "key", action: "down", ...COPY_KEY });
     send({ type: "key", action: "up", ...COPY_KEY });
   };
+  const pageOrigin = tab ? browserTabOrigin(tab) : null;
   const fillLogin = (login: BrowserLogin) => {
-    setFillingPassword(false);
-    send({ type: "fillLogin", ...login });
+    if (fillOrigin === null) return;
+    setFillOrigin(null);
+    send({ type: "fillLogin", origin: fillOrigin, ...login });
   };
 
   return (
@@ -219,10 +224,14 @@ function BrowserPreviewScreen({
           ) : (
             <View className="flex-1" />
           )}
-          {live && canControl && fillingPassword ? (
-            <BrowserPasswordFill onFill={fillLogin} onCancel={() => setFillingPassword(false)} />
+          {live && canControl && fillOrigin !== null ? (
+            <BrowserPasswordFill
+              origin={fillOrigin}
+              onFill={fillLogin}
+              onCancel={() => setFillOrigin(null)}
+            />
           ) : null}
-          {live && canControl && typing && keyboardVisible && !fillingPassword ? (
+          {live && canControl && typing && keyboardVisible && fillOrigin === null ? (
             <KeyboardStickyView
               pointerEvents="box-none"
               style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
@@ -232,7 +241,7 @@ function BrowserPreviewScreen({
                 <BrowserClipboardMenu
                   onPaste={() => void pasteFromClipboard()}
                   onCopy={copySelection}
-                  onFillPassword={() => setFillingPassword(true)}
+                  onFillPassword={pageOrigin === null ? null : () => setFillOrigin(pageOrigin)}
                 />
               </View>
             </KeyboardStickyView>

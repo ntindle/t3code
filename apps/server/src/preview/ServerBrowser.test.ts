@@ -1038,36 +1038,59 @@ it.live("page copies reach only the controlling viewer right after its input", (
 it.live.each([
   {
     name: "a username field gets the username, then Tab, then the password field the password",
-    focused: "text",
+    url: "https://example.com/login",
+    focused: "field",
     afterTab: "password",
     typed: ["nick", "hunter2"],
+    tabs: 2,
   },
   {
     name: "the password is never typed where Tab lands outside a password field",
-    focused: "text",
-    afterTab: "text",
+    url: "https://example.com/login",
+    focused: "field",
+    afterTab: "field",
     typed: ["nick"],
+    tabs: 2,
   },
   {
     name: "a focused password field gets only the password",
+    url: "https://example.com/login",
     focused: "password",
     afterTab: "password",
     typed: ["hunter2"],
+    tabs: 0,
   },
-] as const)("$name", ({ focused, afterTab, typed }) =>
+  {
+    name: "a page that left the confirmed site gets nothing",
+    url: "https://example.net/login",
+    focused: "password",
+    afterTab: "password",
+    typed: [],
+    tabs: 0,
+  },
+  {
+    name: "a field in a cross-origin frame gets nothing",
+    url: "https://example.com/login",
+    focused: "frame",
+    afterTab: "password",
+    typed: [],
+    tabs: 0,
+  },
+] as const)("$name", ({ url, focused, afterTab, typed, tabs }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const { browser, tabId } = yield* ready;
+      yield* Effect.promise(() => contexts[0]!.page.goto(url));
       const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
       yield* viewer.input({ type: "takeControl" });
       const cdp = contexts[0]!.sessions.at(-1)!;
       const send = cdp.send.getMockImplementation()!;
       // Stands in for the page: Tab moves focus to the next field.
-      let field: "text" | "password" = focused;
+      let field: "field" | "password" | "frame" = focused;
       cdp.send.mockImplementation(async (method, input) => {
         const params = (input ?? {}) as { expression?: string; type?: string; key?: string };
         if (method === "Runtime.evaluate" && params.expression?.includes("activeElement")) {
-          return { result: { value: field === "password" } };
+          return { result: { value: field } };
         }
         if (
           method === "Input.dispatchKeyEvent" &&
@@ -1078,16 +1101,21 @@ it.live.each([
         }
         return send(method, input);
       });
-      yield* viewer.input({ type: "fillLogin", username: "nick", password: "hunter2" });
+      yield* viewer.input({
+        type: "fillLogin",
+        origin: "https://example.com",
+        username: "nick",
+        password: "hunter2",
+      });
       const inserted = cdp.send.mock.calls
         .filter(([method]) => method === "Input.insertText")
         .map(([, input]) => (input as { text: string }).text);
       expect(inserted).toEqual(typed);
-      const tabs = cdp.send.mock.calls.filter(
+      const tabPresses = cdp.send.mock.calls.filter(
         ([method, input]) =>
           method === "Input.dispatchKeyEvent" && (input as { key?: string }).key === "Tab",
       );
-      expect(tabs).toHaveLength(focused === "password" ? 0 : 2);
+      expect(tabPresses).toHaveLength(tabs);
     }),
   ).pipe(Effect.provide(layer)),
 );

@@ -88,11 +88,17 @@ export type PreviewStreamInput =
     }
   | { readonly type: "text"; readonly text: string }
   /**
-   * A saved login from the viewer's AutoFill. A focused password field gets the
+   * A saved login from the viewer's AutoFill, for the page only while it is on
+   * `origin`, the site the viewer confirmed. A focused password field gets the
    * password; another field gets the username, then Tab, then the password only
-   * if Tab reached a password field.
+   * if Tab reached a password field. A field in a cross-origin frame gets nothing.
    */
-  | { readonly type: "fillLogin"; readonly username: string; readonly password: string }
+  | {
+      readonly type: "fillLogin";
+      readonly origin: string;
+      readonly username: string;
+      readonly password: string;
+    }
   | { readonly type: "resize"; readonly width: number; readonly height: number }
   | { readonly type: "navigate"; readonly url: string }
   | { readonly type: "history"; readonly delta: -1 | 1 }

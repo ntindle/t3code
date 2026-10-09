@@ -13,6 +13,8 @@ export interface BrowserLogin {
  * iOS keyboard, or Android's autofill service) and hands it to the page.
  */
 export function BrowserPasswordFill(props: {
+  /** The page's origin when the card opened, the only site the login goes to. */
+  readonly origin: string;
   readonly onFill: (login: BrowserLogin) => void;
   readonly onCancel: () => void;
 }) {
@@ -28,14 +30,17 @@ export function BrowserPasswordFill(props: {
     requestAnimationFrame(() => (fill ? props.onFill(login) : props.onCancel()));
   };
   const canFill = username.length > 0 || password.length > 0;
+  // An https site shows as its host; http keeps its scheme, so it reads as unencrypted.
+  const site = props.origin.replace(/^https:\/\//, "");
   return (
     // Below the address bar and control row, where the page's dialog cards sit.
     <View className="absolute inset-x-3 top-28 gap-3 rounded-xl border border-secondary-border bg-secondary p-4">
       <View className="gap-1">
         <AppText className="font-t3-bold text-sm text-secondary-foreground">Fill password</AppText>
+        <AppText className="text-sm text-secondary-foreground">{site}</AppText>
         <AppText className="text-xs text-foreground-muted">
-          Choose a saved login above the keyboard. The page gets the username, then the password,
-          which only goes into a password field.
+          Choose a saved login above the keyboard. Only this site gets it: the username, then the
+          password, which only goes into a password field.
         </AppText>
       </View>
       <AppTextInput

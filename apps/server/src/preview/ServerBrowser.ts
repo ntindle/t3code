@@ -121,18 +121,32 @@ const EDITABLE_AT_POINT_SCRIPT = `(x, y) => {
   const nonText = ["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"];
   return !nonText.includes(element.type) && !element.disabled && !element.readOnly;
 }`;
-// A viewer's saved password goes only into a focused password field, found through
-// shadow roots and same-origin frames; a cross-origin frame stays opaque.
-const FOCUSED_PASSWORD_SCRIPT = `() => {
+// Where a viewer's saved login would land, found through shadow roots and same-origin
+// frames: "password" for a password field, "field" for anything else, "frame" when focus is
+// in a cross-origin frame, which stays opaque and gets nothing.
+const FOCUSED_FIELD_SCRIPT = `() => {
   let element = document.activeElement;
   while (element) {
-    const frame = element.tagName === "IFRAME" || element.tagName === "FRAME";
-    const inner = element.shadowRoot?.activeElement ?? (frame ? element.contentDocument?.activeElement : null);
+    if (element.tagName === "IFRAME" || element.tagName === "FRAME") {
+      if (!element.contentDocument) return "frame";
+      element = element.contentDocument.activeElement;
+      continue;
+    }
+    const inner = element.shadowRoot?.activeElement;
     if (!inner || inner === element) break;
     element = inner;
   }
-  return element?.tagName === "INPUT" && element.type === "password" && !element.disabled && !element.readOnly;
+  const password = element?.tagName === "INPUT" && element.type === "password" && !element.disabled && !element.readOnly;
+  return password ? "password" : "field";
 }`;
+const httpOrigin = (url: string) => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+};
 const UNATTACHED_FILL_VIEWPORT = { width: 1280, height: 800 } as const;
 const NAVIGATION_TIMEOUT_MS = 15_000;
 const VIEWER_NAVIGATION_OPTIONS = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
@@ -2115,14 +2129,20 @@ const make = Effect.gen(function* () {
       case "fillLogin": {
         const username = typeof message.username === "string" ? message.username : "";
         const password = typeof message.password === "string" ? message.password : "";
-        const passwordFocused = async () => {
+        // The site the viewer confirmed. The page's own URL decides, which its scripts cannot fake.
+        const origin = typeof message.origin === "string" ? message.origin : "";
+        const target = async () => {
+          if (!origin || httpOrigin(tab.page.url()) !== origin) return null;
           const result = await session.send("Runtime.evaluate", {
-            expression: `(${FOCUSED_PASSWORD_SCRIPT})()`,
+            expression: `(${FOCUSED_FIELD_SCRIPT})()`,
             returnByValue: true,
           });
-          return result.result.value === true;
+          const field: unknown = result.result.value;
+          return field === "password" || field === "field" ? field : null;
         };
-        if (await passwordFocused()) {
+        const first = await target();
+        if (first === null) return;
+        if (first === "password") {
           if (password) await session.send("Input.insertText", { text: password.slice(0, 10_000) });
           return;
         }
@@ -2137,7 +2157,7 @@ const make = Effect.gen(function* () {
           });
         }
         // A password never lands in a field that would show it.
-        if (await passwordFocused()) {
+        if ((await target()) === "password") {
           await session.send("Input.insertText", { text: password.slice(0, 10_000) });
         }
         return;
