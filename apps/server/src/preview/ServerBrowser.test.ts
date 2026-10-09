@@ -1035,6 +1035,63 @@ it.live("page copies reach only the controlling viewer right after its input", (
   ).pipe(Effect.provide(layer)),
 );
 
+it.live.each([
+  {
+    name: "a username field gets the username, then Tab, then the password field the password",
+    focused: "text",
+    afterTab: "password",
+    typed: ["nick", "hunter2"],
+  },
+  {
+    name: "the password is never typed where Tab lands outside a password field",
+    focused: "text",
+    afterTab: "text",
+    typed: ["nick"],
+  },
+  {
+    name: "a focused password field gets only the password",
+    focused: "password",
+    afterTab: "password",
+    typed: ["hunter2"],
+  },
+] as const)("$name", ({ focused, afterTab, typed }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      const cdp = contexts[0]!.sessions.at(-1)!;
+      const send = cdp.send.getMockImplementation()!;
+      // Stands in for the page: Tab moves focus to the next field.
+      let field: "text" | "password" = focused;
+      cdp.send.mockImplementation(async (method, input) => {
+        const params = (input ?? {}) as { expression?: string; type?: string; key?: string };
+        if (method === "Runtime.evaluate" && params.expression?.includes("activeElement")) {
+          return { result: { value: field === "password" } };
+        }
+        if (
+          method === "Input.dispatchKeyEvent" &&
+          params.key === "Tab" &&
+          params.type === "keyUp"
+        ) {
+          field = afterTab;
+        }
+        return send(method, input);
+      });
+      yield* viewer.input({ type: "fillLogin", username: "nick", password: "hunter2" });
+      const inserted = cdp.send.mock.calls
+        .filter(([method]) => method === "Input.insertText")
+        .map(([, input]) => (input as { text: string }).text);
+      expect(inserted).toEqual(typed);
+      const tabs = cdp.send.mock.calls.filter(
+        ([method, input]) =>
+          method === "Input.dispatchKeyEvent" && (input as { key?: string }).key === "Tab",
+      );
+      expect(tabs).toHaveLength(focused === "password" ? 0 : 2);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a page download is saved, offered to the controller, and listed for the agent", () =>
   Effect.scoped(
     Effect.gen(function* () {

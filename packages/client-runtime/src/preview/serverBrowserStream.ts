@@ -87,6 +87,12 @@ export type PreviewStreamInput =
       readonly modifiers: number;
     }
   | { readonly type: "text"; readonly text: string }
+  /**
+   * A saved login from the viewer's AutoFill. A focused password field gets the
+   * password; another field gets the username, then Tab, then the password only
+   * if Tab reached a password field.
+   */
+  | { readonly type: "fillLogin"; readonly username: string; readonly password: string }
   | { readonly type: "resize"; readonly width: number; readonly height: number }
   | { readonly type: "navigate"; readonly url: string }
   | { readonly type: "history"; readonly delta: -1 | 1 }

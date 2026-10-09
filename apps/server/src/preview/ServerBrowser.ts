@@ -121,6 +121,18 @@ const EDITABLE_AT_POINT_SCRIPT = `(x, y) => {
   const nonText = ["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"];
   return !nonText.includes(element.type) && !element.disabled && !element.readOnly;
 }`;
+// A viewer's saved password goes only into a focused password field, found through
+// shadow roots and same-origin frames; a cross-origin frame stays opaque.
+const FOCUSED_PASSWORD_SCRIPT = `() => {
+  let element = document.activeElement;
+  while (element) {
+    const frame = element.tagName === "IFRAME" || element.tagName === "FRAME";
+    const inner = element.shadowRoot?.activeElement ?? (frame ? element.contentDocument?.activeElement : null);
+    if (!inner || inner === element) break;
+    element = inner;
+  }
+  return element?.tagName === "INPUT" && element.type === "password" && !element.disabled && !element.readOnly;
+}`;
 const UNATTACHED_FILL_VIEWPORT = { width: 1280, height: 800 } as const;
 const NAVIGATION_TIMEOUT_MS = 15_000;
 const VIEWER_NAVIGATION_OPTIONS = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
@@ -2100,6 +2112,36 @@ const make = Effect.gen(function* () {
           await session.send("Input.insertText", { text: message.text.slice(0, 10_000) });
         }
         return;
+      case "fillLogin": {
+        const username = typeof message.username === "string" ? message.username : "";
+        const password = typeof message.password === "string" ? message.password : "";
+        const passwordFocused = async () => {
+          const result = await session.send("Runtime.evaluate", {
+            expression: `(${FOCUSED_PASSWORD_SCRIPT})()`,
+            returnByValue: true,
+          });
+          return result.result.value === true;
+        };
+        if (await passwordFocused()) {
+          if (password) await session.send("Input.insertText", { text: password.slice(0, 10_000) });
+          return;
+        }
+        if (username) await session.send("Input.insertText", { text: username.slice(0, 10_000) });
+        if (!password) return;
+        for (const type of ["rawKeyDown", "keyUp"] as const) {
+          await session.send("Input.dispatchKeyEvent", {
+            type,
+            key: "Tab",
+            code: "Tab",
+            windowsVirtualKeyCode: 9,
+          });
+        }
+        // A password never lands in a field that would show it.
+        if (await passwordFocused()) {
+          await session.send("Input.insertText", { text: password.slice(0, 10_000) });
+        }
+        return;
+      }
       case "resize": {
         const width = Math.min(Math.round(num(message.width)), 3840);
         const height = Math.min(Math.round(num(message.height)), 2160);
