@@ -64,6 +64,7 @@ import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./usageLimits.ts
 import {
   createMuseSdkHostEffect,
   museApprovalMode,
+  museWorkspaceRoot,
   type createMuseSdkHost,
   type MuseSdkHost,
 } from "./sdk.ts";
@@ -292,6 +293,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       const cwd = yield* fileSystem
         .realPath(requestedCwd)
         .pipe(Effect.orElseSucceed(() => requestedCwd));
+      const workspaceRoot = yield* museWorkspaceRoot(cwd);
       const now = yield* DateTime.now;
       let session: OrchestrationV2ProviderSession = {
         id: input.providerSessionId,
@@ -1792,7 +1794,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 displayText: turnInput.message.text || "Image attachment",
                 // A resumed session keeps the root it was created with; pin it to
                 // this thread's current checkout so edits land where T3 tracks them.
-                workspaceRoots: [cwd],
+                workspaceRoots: [workspaceRoot],
                 ifBusy: "queue",
                 ...(effort ? { reasoningEffort: effort } : {}),
               },
