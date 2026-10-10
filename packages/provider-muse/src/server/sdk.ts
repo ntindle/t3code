@@ -10,7 +10,7 @@ import {
   type SpawnedMspConnection,
 } from "@muse-code/sdk";
 import type { RuntimeMode } from "@t3tools/contracts";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 
@@ -32,7 +32,7 @@ export interface MuseSdkHost {
   readonly close: () => Promise<void>;
 }
 
-/** The program that starts Muse, and the arguments that go before `serve` and its flags. */
+/** The program that runs `binaryPath`, and the arguments that go before the binary's own. */
 export interface MuseLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -40,6 +40,8 @@ export interface MuseLaunch {
 
 export interface MuseSdkHostOptions {
   readonly binaryPath: string;
+  /** Arguments before the serve arguments, for a launcher in front of the binary. */
+  readonly launchArgs?: ReadonlyArray<string>;
   /** How to start `binaryPath`, from `museLaunch`; without it the binary path is run as is. */
   readonly launch?: MuseLaunch;
   readonly cwd?: string;
@@ -82,7 +84,7 @@ export function museVerbatimPath(path: string): string {
  * cannot use a verbatim directory.
  */
 export const museWorkspaceRoot = Effect.fn("museWorkspaceRoot")(function* (path: string) {
-  if ((yield* HostProcessPlatform) !== "win32") return path;
+  if ((yield* HostProcess.Platform) !== "win32") return path;
   const canonical = yield* Effect.tryPromise(() => NodeFSP.realpath(path)).pipe(
     // A verbatim path takes `/` literally, so an unresolved root needs Windows separators.
     Effect.orElseSucceed(() => path.replaceAll("/", "\\")),
@@ -111,8 +113,8 @@ export const museLaunch = Effect.fn("museLaunch")(function* (
   binaryPath: string,
   environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<MuseLaunch> {
-  if ((yield* HostProcessPlatform) !== "win32") return { command: binaryPath, args: [] };
-  const env = environment ?? (yield* HostProcessEnvironment);
+  if ((yield* HostProcess.Platform) !== "win32") return { command: binaryPath, args: [] };
+  const env = environment ?? (yield* HostProcess.Environment);
   const resolveExecutable = yield* SpawnExecutableResolution;
   const resolved = resolveExecutable(binaryPath, "win32", env) ?? binaryPath;
   if (!/\.(?:cmd|bat)$/i.test(resolved)) return { command: resolved, args: [] };
@@ -168,7 +170,7 @@ export async function createMuseSdkHost(
   const launch = options.launch ?? { command: options.binaryPath, args: [] };
   const handshake = spawn({
     command: launch.command,
-    args: [...launch.args, ...museServeArgs(options)],
+    args: [...launch.args, ...(options.launchArgs ?? []), ...museServeArgs(options)],
     ...(options.cwd ? { cwd: options.cwd } : {}),
     // Callers pass an environment already built with makeMuseEnvironment.
     env: options.environment ?? makeMuseEnvironment(),

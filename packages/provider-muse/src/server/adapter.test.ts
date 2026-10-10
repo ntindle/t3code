@@ -18,34 +18,33 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { MuseSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type * as Exit from "effect/Exit";
-import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import { layerTestProviderHost } from "@t3tools/provider-testing/host";
-import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { MuseItem } from "./protocol.ts";
 import type { MuseSdkHost } from "./sdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import type { ProviderContinuationRequest } from "@t3tools/provider-core/server/continuationRequests";
+import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeMuseAdapterV2, type MuseAdapterV2Options } from "./adapter.ts";
 
 const testLayer = Layer.mergeAll(
   NodeServices.layer,
   IdAllocator.layer,
-  layerTestProviderHost().pipe(Layer.provide(NodeServices.layer)),
+  McpProviderSessions.layer,
+  TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
 );
 const MUSE_PROVIDER = ProviderDriverKind.make("muse");
 const INSTANCE_ID = ProviderInstanceId.make("muse_work");
@@ -196,13 +195,10 @@ const makeHarness = Effect.fnUntraced(function* (
   > = {},
 ) {
   let hostCount = 0;
-  const adapter = makeMuseAdapterV2({
+  const adapter = yield* makeMuseAdapterV2({
     instanceId,
     settings: museSettings,
     environment: { PATH: "/fake/bin" },
-    idAllocator: yield* IdAllocator.IdAllocatorV2,
-    host: yield* ProviderHost.ProviderHost,
-    fileSystem: yield* FileSystem.FileSystem,
     createHost: async () => (hostCount++ === 0 ? fake.host : (replacement ?? fake).host),
     ...overrides,
   });
@@ -357,10 +353,7 @@ const approval = (turnId: string) => ({
 describe("MuseAdapterV2", () => {
   it.effect("connects the thread's MCP credential on native start and resume", () =>
     Effect.gen(function* () {
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
-      );
-      McpProviderSession.setMcpProviderSession({
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
         environmentId: EnvironmentId.make("test-environment"),
         threadId: THREAD_ID,
         providerSessionId: "test-session",
@@ -390,10 +383,7 @@ describe("MuseAdapterV2", () => {
 
   it.effect("rejects a host without session MCP support before opening a native session", () =>
     Effect.gen(function* () {
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
-      );
-      McpProviderSession.setMcpProviderSession({
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
         environmentId: EnvironmentId.make("test-environment"),
         threadId: THREAD_ID,
         providerSessionId: "test-session",
@@ -435,13 +425,10 @@ describe("MuseAdapterV2", () => {
       for (const kind of ["sessionNotFound", "notFound"] as const) {
         const fake = yield* makeFakeMuse();
         const allocated = yield* preallocatedProviderThread();
-        const adapter = makeMuseAdapterV2({
+        const adapter = yield* makeMuseAdapterV2({
           instanceId: INSTANCE_ID,
           settings: museSettings,
           environment: { PATH: "/fake/bin" },
-          idAllocator: yield* IdAllocator.IdAllocatorV2,
-          host: yield* ProviderHost.ProviderHost,
-          fileSystem: yield* FileSystem.FileSystem,
           createHost: async () => fake.host,
         });
         const runtime = yield* adapter.openSession({
@@ -542,7 +529,7 @@ describe("MuseAdapterV2", () => {
       // The muse.cmd launcher runs under cmd.exe, which cannot start in a verbatim directory.
       assert.strictEqual(hostCwd, "C:\\work\\repo");
     }).pipe(
-      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(HostProcess.Platform, "win32"),
       Effect.scoped,
       Effect.provide(testLayer),
     ),
@@ -810,7 +797,7 @@ describe("MuseAdapterV2", () => {
   it.effect("lets a user turn take a held Muse report turn, approvals included", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
-      const offers: Array<ProviderContinuationRequest> = [];
+      const offers: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
       const harness = yield* makeHarness(
         fake,
         INSTANCE_ID,

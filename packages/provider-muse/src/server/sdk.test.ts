@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { spawnMspConnection, type MspHandshake, type SpawnedMspConnection } from "@muse-code/sdk";
 import { it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -279,7 +279,7 @@ describe("Muse launch", () => {
   const CMD = "C:\\Windows\\system32\\cmd.exe";
   const onWindows = (resolved: string | undefined, env: NodeJS.ProcessEnv = { ComSpec: CMD }) =>
     museLaunch("muse", env).pipe(
-      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(HostProcess.Platform, "win32"),
       Effect.provideService(SpawnExecutableResolution, () => resolved),
     );
 
@@ -287,7 +287,7 @@ describe("Muse launch", () => {
     Effect.gen(function* () {
       expect(yield* museLaunch("muse")).toEqual({ command: "muse", args: [] });
     }).pipe(
-      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(HostProcess.Platform, "linux"),
       Effect.provideService(SpawnExecutableResolution, () => {
         throw new Error("Nothing is resolved off Windows.");
       }),
@@ -325,7 +325,7 @@ describe("Muse launch", () => {
   // cmd's quote rules only show with a real cmd.exe, spawning as the SDK does.
   it.effect("starts a real launcher from a folder with spaces and cmd metacharacters", () =>
     Effect.gen(function* () {
-      if ((yield* HostProcessPlatform) !== "win32") return;
+      if ((yield* HostProcess.Platform) !== "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const folder = path.join(
@@ -375,7 +375,43 @@ describe("Muse launch", () => {
         ],
       });
     }).pipe(
-      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(SpawnExecutableResolution, () => "C:\\Muse\\muse.cmd"),
+    ),
+  );
+
+  it.effect("passes launcher arguments to the binary that cmd.exe starts", () =>
+    Effect.gen(function* () {
+      const fake = mockSpawn();
+      const starting = yield* Effect.forkChild(
+        createMuseSdkHostEffect({
+          binaryPath: "muse",
+          launchArgs: ["--launcher-arg"],
+          environment: { ComSpec: CMD },
+          readOnly: true,
+        }),
+      );
+      yield* Effect.promise(() => fake.initializing.promise);
+      const spawned = vi.mocked(spawnMspConnection).mock.lastCall?.[0];
+      fake.startup.resolve(fake.ready);
+      const host = yield* Fiber.join(starting);
+      fake.shutdown.resolve({ code: 0, signal: null });
+      yield* Effect.promise(() => host.close());
+      expect(spawned).toMatchObject({
+        command: CMD,
+        args: [
+          "/d",
+          "/c",
+          "C:\\Muse\\muse.cmd",
+          "--launcher-arg",
+          "serve",
+          "--disable-shell",
+          "--disable-write",
+          "--no-session-log",
+        ],
+      });
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
       Effect.provideService(SpawnExecutableResolution, () => "C:\\Muse\\muse.cmd"),
     ),
   );
@@ -391,7 +427,7 @@ describe("Muse workspace root", () => {
   it.effect("leaves the root alone off Windows", () =>
     Effect.gen(function* () {
       expect(yield* museWorkspaceRoot("/workspace/repo")).toBe("/workspace/repo");
-    }).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("keeps a Windows root it cannot resolve, in verbatim form", () =>
@@ -406,13 +442,13 @@ describe("Muse workspace root", () => {
       expect(yield* museWorkspaceRoot("//server/share/missing")).toBe(
         "\\\\?\\UNC\\server\\share\\missing",
       );
-    }).pipe(Effect.provideService(HostProcessPlatform, "win32")),
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
   );
 
   // FileSystem.realPath keeps the case it is given; Muse rejects a root whose case differs from the disk's.
   it.effect("fixes the case of a Windows root natively", () =>
     Effect.gen(function* () {
-      if ((yield* HostProcessPlatform) !== "win32") return;
+      if ((yield* HostProcess.Platform) !== "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const created = yield* fs.makeTempDirectoryScoped({ prefix: "MuseRoot-" });
