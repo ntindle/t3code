@@ -66,6 +66,7 @@ import type {
   Dialog,
   Download,
   FileChooser,
+  Frame,
   Page,
 } from "playwright-core";
 
@@ -77,6 +78,7 @@ import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
+import * as ServerBrowserPasskeys from "./ServerBrowserPasskeys.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
@@ -217,6 +219,15 @@ export type ServerBrowserViewerOutput =
       readonly accept: string;
     }
   | { readonly _tag: "fileChooserClosed"; readonly id: string }
+  /** The page asked for a passkey; only a controlling viewer that offered passkeys gets it. */
+  | {
+      readonly _tag: "passkey";
+      readonly id: string;
+      readonly kind: "create" | "get";
+      readonly origin: string;
+      readonly publicKey: Readonly<Record<string, unknown>>;
+    }
+  | { readonly _tag: "passkeyCancel"; readonly id: string }
   /** The page this viewer controls opened a new tab; the viewer shows it, as a browser would. */
   | { readonly _tag: "popup"; readonly tabId: string }
   | {
@@ -244,6 +255,8 @@ export class ServerBrowser extends Context.Service<
       readonly maxHeight: number;
       readonly quality: number;
       readonly canOperate: boolean;
+      /** The viewer's device answers the page's passkey requests while it has control. */
+      readonly passkeys?: boolean;
     }) => Effect.Effect<
       ServerBrowserViewer,
       ServerBrowserTabNotFoundError | ServerBrowserLaunchError,
@@ -290,6 +303,8 @@ interface ViewerState {
   scrolledAt: number;
   /** Last input from this viewer; page copies reach its clipboard only right after. */
   inputAt: number;
+  /** This viewer's device answers the page's passkey requests while it has control. */
+  readonly passkeys: boolean;
   /** Panel bounds, retained in fixed mode; passive viewers never request a size. */
   requestedSize: { width: number; height: number; order: number } | null;
 }
@@ -343,6 +358,15 @@ interface ServerTab {
     readonly accept: string;
   } | null;
   dialog: Dialog | null;
+  /** A page's passkey request, waiting on the controlling viewer's device. */
+  passkey: {
+    readonly id: string;
+    readonly ticket: unknown;
+    readonly frame: Frame;
+    readonly viewerId: string;
+    readonly request: ServerBrowserPasskeys.PasskeyRequest;
+    readonly settle: (answer: ServerBrowserPasskeys.PasskeyAnswer) => void;
+  } | null;
   setting: PreviewViewportSetting;
   colorScheme: PreviewAppearancePreference;
   zoomFactor: number;
@@ -550,7 +574,19 @@ const make = Effect.gen(function* () {
         }
       : null;
 
+  /** Ends the tab's passkey request, closing its viewer's sheet. The page gets NotAllowedError. */
+  const cancelPasskey = (tab: ServerTab) => {
+    const pending = tab.passkey;
+    if (!pending) return;
+    tab.passkey = null;
+    for (const viewer of tab.viewers)
+      if (viewer.id === pending.viewerId) viewer.push({ _tag: "passkeyCancel", id: pending.id });
+    pending.settle({ error: "NotAllowedError" });
+  };
+
   const broadcastControl = (tab: ServerTab) => {
+    // A request belongs to the viewer that had control when the page asked.
+    if (tab.passkey && tab.passkey.viewerId !== tab.control.controller) cancelPasskey(tab);
     for (const viewer of tab.viewers)
       viewer.push({
         _tag: "control",
@@ -711,6 +747,7 @@ const make = Effect.gen(function* () {
     tabs.delete(key);
     tab.closing = true;
     clearAbortedNavigation(tab);
+    cancelPasskey(tab);
     // A desktop page outlives the connection unless its session closed with it.
     const end = tab.desktop && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
@@ -816,6 +853,7 @@ const make = Effect.gen(function* () {
       downloads: [],
       fileChooser: null,
       dialog: null,
+      passkey: null,
       setting: snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
       colorScheme: "system",
       zoomFactor: 1,
@@ -1126,6 +1164,71 @@ const make = Effect.gen(function* () {
         : Option.some({ path: download.path, fileName: download.fileName });
     });
 
+  /**
+   * Serves a page's passkey request with the controlling viewer's device. With
+   * no such viewer, the page keeps Chromium's own WebAuthn.
+   */
+  const answerPasskey = async (
+    page: Page,
+    frame: Frame,
+    kind: unknown,
+    ticket: unknown,
+    options: unknown,
+  ): Promise<unknown> => {
+    const tab = [...tabs.values()].find((candidate) => candidate.page === page);
+    if (kind === "abort") {
+      const pending = tab?.passkey;
+      if (tab && pending && pending.ticket === ticket && pending.frame === frame) {
+        cancelPasskey(tab);
+      }
+      return null;
+    }
+    // Pages often check once, on load, so a device watching the tab counts before it takes control.
+    if (kind === "available") {
+      return tab !== undefined && [...tab.viewers].some((viewer) => viewer.passkeys);
+    }
+    const controller = tab
+      ? [...tab.viewers].find((viewer) => viewer.id === tab.control.controller && viewer.passkeys)
+      : undefined;
+    if (!tab || !controller) return { native: true };
+    if (kind !== "create" && kind !== "get") return { error: "TypeError" };
+    // Chromium names the origin, never the page. Like Chromium's own sheet, only a
+    // top-level page asks, one request at a time, right after the person touched it.
+    const origin =
+      frame === page.mainFrame() ? ServerBrowserPasskeys.passkeyOrigin(frame.url()) : null;
+    if (
+      origin === null ||
+      tab.passkey !== null ||
+      Date.now() - controller.inputAt > ServerBrowserPasskeys.PASSKEY_GESTURE_MS
+    ) {
+      return { error: "NotAllowedError" };
+    }
+    const request = ServerBrowserPasskeys.passkeyRequest(kind, origin, options);
+    if ("error" in request) return request;
+    const id = NodeCrypto.randomUUID();
+    const answer = await new Promise<ServerBrowserPasskeys.PasskeyAnswer>((resolve) => {
+      const timer = setTimeout(() => cancelPasskey(tab), request.timeoutMs);
+      tab.passkey = {
+        id,
+        ticket,
+        frame,
+        viewerId: controller.id,
+        request,
+        settle: (next) => {
+          clearTimeout(timer);
+          if (tab.passkey?.id === id) tab.passkey = null;
+          resolve(next);
+        },
+      };
+      controller.push({ _tag: "passkey", id, kind, origin, publicKey: request.publicKey });
+    });
+    // A credential for a page that navigated away belongs to nobody.
+    return "credential" in answer &&
+      (frame.isDetached() || ServerBrowserPasskeys.passkeyOrigin(frame.url()) !== origin)
+      ? { error: "NotAllowedError" }
+      : answer;
+  };
+
   const preparedContexts = new WeakSet<BrowserContext>();
   const prepareContext = async (context: BrowserContext) => {
     if (preparedContexts.has(context)) return;
@@ -1141,6 +1244,12 @@ const make = Effect.gen(function* () {
       controller.push({ _tag: "clipboard", text: text.slice(0, CLIPBOARD_TEXT_LIMIT) });
     });
     await context.addInitScript(CLIPBOARD_SCRIPT);
+    await context.exposeBinding(
+      ServerBrowserPasskeys.PASSKEY_BINDING,
+      ({ page, frame }, kind: unknown, ticket: unknown, options: unknown) =>
+        answerPasskey(page, frame, kind, ticket, options),
+    );
+    await context.addInitScript(ServerBrowserPasskeys.PASSKEY_SCRIPT);
   };
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
@@ -2271,13 +2380,24 @@ const make = Effect.gen(function* () {
           if (next._tag === "frame") runFork(next.ack);
           // State a stalled viewer cannot miss replaces its backlog. It runs
           // synchronously so an older replacement can never land after a newer one.
-          else if (next._tag === "gone" || next._tag === "control" || next._tag === "fileChooser") {
+          else if (
+            next._tag === "gone" ||
+            next._tag === "control" ||
+            next._tag === "fileChooser" ||
+            next._tag === "passkey" ||
+            next._tag === "passkeyCancel"
+          ) {
             const dropped = Effect.runSyncExit(Queue.clear(output));
             if (dropped._tag === "Failure") return;
             Queue.offerUnsafe(output, next);
             // The controller's open picker may have been in the dropped backlog.
             const chooser = next._tag === "control" ? fileChooserMessage(tab) : null;
             if (chooser && tab.control.controller === viewer.id) Queue.offerUnsafe(output, chooser);
+            // So may a passkey request the page still waits on; sent twice, it would open twice.
+            const request = dropped.value.find((item) => item._tag === "passkey");
+            if (request && next._tag !== "passkeyCancel" && tab.passkey?.id === request.id) {
+              Queue.offerUnsafe(output, request);
+            }
             for (const item of dropped.value) if (item._tag === "frame") runFork(item.ack);
           }
         },
@@ -2290,6 +2410,7 @@ const make = Effect.gen(function* () {
         resume: () => startScreencast(screencastScale),
         scrolledAt: 0,
         inputAt: 0,
+        passkeys: input.canOperate && input.passkeys === true,
         requestedSize: null,
       };
       yield* Effect.acquireRelease(
@@ -2409,6 +2530,13 @@ const make = Effect.gen(function* () {
                     ? { promptText: message.promptText }
                     : {}),
                 });
+              } else if (message.type === "passkeyResult") {
+                const pending = tab.passkey;
+                if (pending && pending.id === message.id && pending.viewerId === viewer.id) {
+                  pending.settle(
+                    ServerBrowserPasskeys.passkeyAnswer(pending.request, message.result),
+                  );
+                }
               } else {
                 await tab.control.human(viewer.id, () =>
                   dispatchViewerInput(tab, session, viewer, message),

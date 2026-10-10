@@ -29,6 +29,11 @@ import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { usePreviewStreamAccess } from "../../state/preview";
 
 import {
+  browserPasskeysAvailable,
+  cancelBrowserPasskey,
+  performBrowserPasskey,
+} from "./browserPasskeys";
+import {
   previewStreamDocument,
   previewStreamMessage,
   type PreviewStreamConfiguration,
@@ -117,7 +122,7 @@ function offerDownload(download: PreviewStreamDownload) {
 const MAX_REFUSALS = 3;
 
 export function PreviewStreamWebView(
-  props: Omit<PreviewStreamConfiguration, "access"> &
+  props: Omit<PreviewStreamConfiguration, "access" | "passkeys"> &
     Omit<NativeStreamBridge, "onUnauthorized"> & {
       readonly environmentId: EnvironmentId;
       readonly paused?: boolean;
@@ -164,7 +169,7 @@ export function PreviewStreamWebView(
 function AuthorizedPreviewStream({
   ref,
   ...props
-}: PreviewStreamConfiguration & NativeStreamBridge) {
+}: Omit<PreviewStreamConfiguration, "passkeys"> & NativeStreamBridge) {
   const [attempt, setAttempt] = useState(0);
   const [previousAccess, setPreviousAccess] = useState(props.access);
   // Wait for refreshed access, including cookie credentials with unchanged JSON.
@@ -187,6 +192,7 @@ function AuthorizedPreviewStream({
     tabId: props.tabId,
     interactive: props.interactive,
     background: props.background,
+    passkeys: props.interactive && browserPasskeysAvailable,
   } satisfies PreviewStreamConfiguration);
   return (
     <PreviewStreamDocumentView
@@ -410,6 +416,16 @@ function PreviewStreamDocumentView({
               return;
             case "fileChooser":
               setFileChooser(message.chooser);
+              return;
+            case "passkey": {
+              const { request } = message;
+              void performBrowserPasskey(request).then((result) =>
+                command({ type: "passkeyResult", id: request.id, result }),
+              );
+              return;
+            }
+            case "passkeyCancel":
+              cancelBrowserPasskey(message.id);
               return;
             case "pictureInPicture":
               onPictureInPicture?.(message, message.detail);

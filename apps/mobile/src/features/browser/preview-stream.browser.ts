@@ -179,6 +179,7 @@ export function start(configuration: PreviewStreamConfiguration) {
         maxWidth: cap.width,
         maxHeight: cap.height,
         interactive,
+        passkeys: configuration.passkeys,
       },
       {
         onFrame: (jpeg) => painter.paint(jpeg),
@@ -186,6 +187,8 @@ export function start(configuration: PreviewStreamConfiguration) {
         onClipboard: (text) => post({ type: "clipboard", text }),
         onDownload: (download) => post({ type: "download", ...download }),
         onFileChooser: (chooser) => post({ type: "fileChooser", chooser }),
+        onPasskey: (request) => post({ type: "passkey", request }),
+        onPasskeyCancel: (id) => post({ type: "passkeyCancel", id }),
         onViewport: (page) => {
           if (viewport?.width === page.width && viewport.height === page.height) return;
           viewport = page;
