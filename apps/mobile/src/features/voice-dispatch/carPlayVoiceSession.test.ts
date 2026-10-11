@@ -121,6 +121,29 @@ describe("CarPlayVoiceSession", () => {
     expect(car.native.listen).toHaveBeenCalledTimes(2);
   });
 
+  it("starts again when CarPlay reconnects while the last conversation unwinds", async () => {
+    const car = fakeCar();
+    const session = new CarPlayVoiceSession({
+      native: car.native,
+      projects: async () => [demo, project("Other")],
+      startThread: async () => "started",
+    });
+
+    void session.start();
+    await car.flush();
+    session.stop();
+    const reconnect = session.start();
+    await car.flush();
+    await car.finishSpeech();
+    await car.answer({ type: "button", buttonId: VOICE_BUTTON.cancel.id });
+    await car.finishSpeech();
+    await reconnect;
+
+    expect(car.native.stopSpeaking).toHaveBeenCalled();
+    expect(car.native.stopListening).toHaveBeenCalledWith(VOICE_BUTTON.cancel.id, false);
+    expect(car.spoken).toEqual(["Which project?", "Which project?", "Okay, cancelled."]);
+  });
+
   it("speaks why voice failed instead of leaving the screen stuck", async () => {
     const car = fakeCar();
     car.native.listen.mockRejectedValueOnce(new Error("T3 Code needs microphone access."));

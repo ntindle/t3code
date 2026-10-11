@@ -85,7 +85,14 @@ export async function startVoiceThread(
     throw new VoiceThreadStartError(`${project.title} has no model available.`);
   }
   const workspaceMode = settings.defaultThreadEnvMode;
-  const branch = pickBranch(refs, workspaceMode);
+  if (workspaceMode === "worktree" && refs === null) {
+    // A worktree needs a base branch, and without the environment there is
+    // no list to pick it from; a queued creation without one never sends.
+    throw new VoiceThreadStartError(
+      `I can't reach ${project.title} to choose a branch for its worktree. Try again when it's back online.`,
+    );
+  }
+  const branch = pickBranch(refs ?? [], workspaceMode);
   if (workspaceMode === "worktree" && branch === null) {
     throw new VoiceThreadStartError(`I couldn't find a branch to start from in ${project.title}.`);
   }
@@ -164,7 +171,8 @@ async function listRefs(target: VoiceDispatchTarget, cwd: string) {
     { environmentId: target.environmentId, input: { cwd } },
     { reportFailure: false },
   );
-  return result._tag === "Success" ? result.value.refs : [];
+  // Null when the environment can't answer, as opposed to a repository without branches.
+  return result._tag === "Success" ? result.value.refs : null;
 }
 
 /**

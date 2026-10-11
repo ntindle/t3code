@@ -189,7 +189,11 @@ export function matchSpokenProject<T extends SpokenProjectCandidate>(
   utterance: string,
   candidates: ReadonlyArray<T>,
 ): SpokenProjectMatch<T> {
-  const utteranceWords = spokenWords(utterance, { dropFiller: true });
+  // A project can be named like a filler word ("Go"), so keep an answer that
+  // is only filler.
+  const meaningful = spokenWords(utterance, { dropFiller: true });
+  const utteranceWords =
+    meaningful.length > 0 ? meaningful : spokenWords(utterance, { dropFiller: false });
   if (utteranceWords.length === 0) return { type: "none" };
   // .sort() on a fresh array, not .toSorted(): Hermes doesn't ship the ES2023 method.
   const ranked = candidates
@@ -227,8 +231,11 @@ const AFFIRMATIVE = new Set([
   "right",
   "affirmative",
 ]);
+// Recognizers often write "don't" as "do not", so "not" must count as a refusal.
 const NEGATIVE = new Set([
   "no",
+  "not",
+  "negative",
   "nope",
   "nah",
   "cancel",

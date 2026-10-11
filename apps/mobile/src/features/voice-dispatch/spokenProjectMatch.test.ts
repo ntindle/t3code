@@ -73,6 +73,11 @@ describe("matchSpokenProject", () => {
     expect(matchSpokenProject("the grocery list", projects)).toEqual({ type: "none" });
     expect(matchSpokenProject("um the", projects)).toEqual({ type: "none" });
   });
+
+  it("matches a project named like a filler word", () => {
+    const go = project("Go");
+    expect(matchSpokenProject("Go", [go, autogpt])).toEqual({ type: "match", candidate: go });
+  });
 });
 
 describe("parseSpokenConfirmation", () => {
@@ -87,6 +92,7 @@ describe("parseSpokenConfirmation", () => {
 
   it("lets a negative win when both appear", () => {
     expect(parseSpokenConfirmation("don't start it")).toBe("no");
+    expect(parseSpokenConfirmation("do not start it")).toBe("no");
     expect(parseSpokenConfirmation("no, wait, yes")).toBe("no");
   });
 });

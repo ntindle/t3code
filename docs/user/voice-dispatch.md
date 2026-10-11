@@ -27,5 +27,6 @@ early. When T3 Code reads your request back, say "yes" or tap **Start**.
   needs a network connection.
 - Nothing starts without a confirmation. Silence or an unclear answer cancels.
 - If the project's environment is offline, the thread is queued and starts when T3 Code reconnects.
+  A project that starts threads in a worktree needs its environment reachable to choose the branch.
 - iOS keeps T3 Code's saved connections locked while your iPhone is locked. If T3 Code isn't
   already running, unlock your iPhone once before using Siri or CarPlay.

@@ -26,7 +26,8 @@ confirmation is the only path to sending. Transcription stays on device and uses
 same SpeechAnalyzer engine as dictation. A dispatched thread goes through the
 [thread outbox](../../apps/mobile/src/features/voice-dispatch/startVoiceThread.ts) with
 the payload an untouched new-task draft would send. That keeps it working against
-existing servers and queues it while an environment is offline. Choosing the project
+existing servers and queues it while an environment is offline, except that a
+worktree project needs its environment to choose the base branch. Choosing the project
 on the server, with internal inference, would need a new contract and is not built.
 
 JS runs the [CarPlay conversation](../../apps/mobile/src/features/voice-dispatch/voiceDispatchConversation.ts),

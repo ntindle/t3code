@@ -35,6 +35,8 @@ export class CarPlayVoiceSession<Project extends VoiceDispatchProject> {
   private listeningFinishIds: ReadonlySet<string> | null = null;
   private pendingButton: string | null = null;
   private failed: { readonly project: Project; readonly request: string } | null = null;
+  /** Settles when the current conversation, if any, has fully unwound. */
+  private settled: Promise<void> = Promise.resolve();
 
   constructor(private readonly dependencies: CarPlayVoiceSessionDependencies<Project>) {}
 
@@ -42,14 +44,21 @@ export class CarPlayVoiceSession<Project extends VoiceDispatchProject> {
     return this.abort !== null;
   }
 
-  /** The CarPlay screen connected; apps in this category launch into voice. */
+  /**
+   * The CarPlay screen connected; apps in this category launch into voice. A
+   * reconnect can arrive while the previous conversation is still unwinding,
+   * so it waits for that one instead of being dropped.
+   */
   start(): Promise<void> {
-    return this.run();
+    return this.settled.then(() => this.run());
   }
 
   /** The CarPlay screen went away mid-conversation. */
   stop(): void {
-    this.abort?.abort();
+    if (!this.abort) return;
+    this.abort.abort();
+    void this.dependencies.native.stopSpeaking();
+    void this.dependencies.native.stopListening(VOICE_BUTTON.cancel.id, false);
   }
 
   handleButton(buttonId: string): void {
@@ -71,10 +80,18 @@ export class CarPlayVoiceSession<Project extends VoiceDispatchProject> {
     }
   }
 
-  private async run(retry?: { readonly project: Project; readonly request: string }) {
-    if (this.isRunning) return;
+  private run(retry?: { readonly project: Project; readonly request: string }): Promise<void> {
+    if (this.isRunning) return this.settled;
     const abort = new AbortController();
     this.abort = abort;
+    this.settled = this.converse(abort, retry);
+    return this.settled;
+  }
+
+  private async converse(
+    abort: AbortController,
+    retry?: { readonly project: Project; readonly request: string },
+  ): Promise<void> {
     try {
       const projects = await this.dependencies.projects();
       const outcome = await runVoiceDispatch({

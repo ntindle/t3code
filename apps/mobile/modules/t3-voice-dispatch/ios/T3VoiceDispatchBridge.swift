@@ -93,8 +93,11 @@ public final class T3VoiceDispatchBridge {
     guard self.module === module else { return }
     self.module = nil
     jsReady = false
-    // A reload drops the JS side of every conversation and request.
+    // A reload drops the JS side of every conversation and request. The old
+    // prompt's buttons would reach no one, so show a neutral screen until
+    // markReady announces the session again.
     stopVoice()
+    carPlayScreen?.showStarting()
     failPendingDispatches(VoiceDispatchError.appNotReady)
   }
 
