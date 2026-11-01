@@ -3095,6 +3095,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.lengthOf(retryItems, 2);
         assert.equal(retryItems[0]?.status, "running");
         assert.equal(retryItems[0]?.failure.code, "responseStreamDisconnected");
+        assert.equal(retryItems[0]?.failure.class, "transport_error");
         assert.deepEqual(retryItems[0]?.retry, {
           attempt: 2,
           maxAttempts: 5,
@@ -3120,6 +3121,281 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.isAtLeast(recoveredIndex, 0);
         assert.isAbove(resumedCommandIndex, recoveredIndex);
         assert.isAbove(terminalIndex, resumedCommandIndex);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  const codexUsageLimitRetry = (input: {
+    readonly nativeThreadId: string;
+    readonly nativeTurnId: string;
+    readonly httpStatusCode: number;
+  }): CodexReplay.CodexAppServerReplayEntry => ({
+    type: "emit_inbound",
+    label: "error/retry",
+    frame: {
+      method: "error",
+      params: {
+        threadId: input.nativeThreadId,
+        turnId: input.nativeTurnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: `exceeded retry limit, last status: ${input.httpStatusCode} Too Many Requests`,
+          codexErrorInfo: {
+            responseStreamDisconnected: { httpStatusCode: input.httpStatusCode },
+          },
+        },
+      },
+    },
+  });
+
+  const codexReplayModelOutput = (input: {
+    readonly nativeThreadId: string;
+    readonly nativeTurnId: string;
+    readonly afterMs?: number;
+  }): CodexReplay.CodexAppServerReplayEntry => ({
+    type: "emit_inbound",
+    label: "item/started/after-retry",
+    ...(input.afterMs === undefined ? {} : { afterMs: input.afterMs }),
+    frame: {
+      method: "item/started",
+      params: {
+        threadId: input.nativeThreadId,
+        turnId: input.nativeTurnId,
+        startedAtMs: 1782622445000,
+        item: {
+          type: "commandExecution",
+          id: "command-after-usage-limit-retry",
+          command: "pwd",
+          cwd: "/workspace",
+          processId: "42",
+          source: "unifiedExecStartup",
+          status: "inProgress",
+          commandActions: [{ type: "unknown", command: "pwd" }],
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        },
+      },
+    },
+  });
+
+  const runningRetryItems = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+    events.flatMap((event) =>
+      event.type === "turn_item.updated" &&
+      event.turnItem.type === "error" &&
+      event.turnItem.retry !== undefined &&
+      event.turnItem.status === "running"
+        ? [event.turnItem]
+        : [],
+    );
+
+  it.effect("stops a turn Codex is still retrying on HTTP 429 and reports it as Limited", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-usage-limit-retry-stop";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const nativeTurnId = `native-${scenario}-turn`;
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
+            codexUsageLimitRetry({ nativeThreadId, nativeTurnId, httpStatusCode: 429 }),
+            {
+              type: "expect_outbound",
+              label: "turn/interrupt",
+              frame: {
+                id: 4,
+                method: "turn/interrupt",
+                params: { threadId: nativeThreadId, turnId: nativeTurnId },
+              },
+            },
+            { type: "emit_inbound", label: "turn/interrupt", frame: { id: 4, result: {} } },
+            {
+              type: "emit_inbound",
+              label: "turn/completed",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "interrupted" }),
+                },
+              },
+            },
+          ],
+        });
+        let interruptSent = false;
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              if (method === "turn/interrupt") interruptSent = true;
+            }),
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`attempt-${scenario}`),
+            text: "Continue.",
+          }),
+        );
+        yield* harness.until(() => runningRetryItems(harness.events).length > 0);
+        assert.equal(runningRetryItems(harness.events)[0]?.failure.class, "usage_limit");
+        yield* TestClock.adjust("4 minutes");
+        assert.isFalse(interruptSent, "a usage-limit retry is waited out within the grace period");
+        yield* TestClock.adjust("1 minute");
+        yield* harness.firstTerminal;
+        assert.isTrue(interruptSent);
+        const terminal = harness.terminalEvents()[0];
+        assert.equal(terminal?.status, "failed");
+        if (terminal?.status !== "failed") return;
+        assert.equal(terminal.failure.class, "usage_limit");
+        assert.equal(terminal.failure.code, "responseStreamDisconnected");
+        assert.equal(
+          terminal.failure.message,
+          "exceeded retry limit, last status: 429 Too Many Requests",
+        );
+        assert.equal(terminal.retry?.attempt, 1);
+        assert.lengthOf(harness.terminalEvents(), 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps a turn whose HTTP 429 retry recovers within the grace period", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-usage-limit-retry-recovers";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const nativeTurnId = `native-${scenario}-turn`;
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
+            codexUsageLimitRetry({ nativeThreadId, nativeTurnId, httpStatusCode: 429 }),
+            codexReplayModelOutput({ nativeThreadId, nativeTurnId, afterMs: 60_000 }),
+            {
+              type: "emit_inbound",
+              label: "turn/completed",
+              afterMs: 300_000,
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        });
+        let interruptSent = false;
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              if (method === "turn/interrupt") interruptSent = true;
+            }),
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`attempt-${scenario}`),
+            text: "Continue.",
+          }),
+        );
+        yield* harness.until(() => runningRetryItems(harness.events).length > 0);
+        yield* TestClock.adjust("1 minute");
+        yield* TestClock.adjust("5 minutes");
+        yield* harness.firstTerminal;
+        assert.isFalse(interruptSent, "a recovered retry is not stopped");
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps Stop during an HTTP 429 retry an interruption", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-usage-limit-retry-user-stop";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const nativeTurnId = `native-${scenario}-turn`;
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
+            codexUsageLimitRetry({ nativeThreadId, nativeTurnId, httpStatusCode: 429 }),
+            {
+              type: "expect_outbound",
+              label: "turn/interrupt",
+              frame: {
+                id: 4,
+                method: "turn/interrupt",
+                params: { threadId: nativeThreadId, turnId: nativeTurnId },
+              },
+            },
+            { type: "emit_inbound", label: "turn/interrupt", frame: { id: 4, result: {} } },
+            {
+              type: "emit_inbound",
+              label: "turn/completed",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "interrupted" }),
+                },
+              },
+            },
+          ],
+        });
+        let interrupts = 0;
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              if (method === "turn/interrupt") interrupts += 1;
+            }),
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`attempt-${scenario}`),
+            text: "Continue.",
+          }),
+        );
+        yield* harness.until(() => runningRetryItems(harness.events).length > 0);
+        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId,
+        });
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId,
+        });
+        yield* harness.firstTerminal;
+        yield* TestClock.adjust("5 minutes");
+        assert.equal(interrupts, 1);
+        assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+        assert.lengthOf(harness.terminalEvents(), 1);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

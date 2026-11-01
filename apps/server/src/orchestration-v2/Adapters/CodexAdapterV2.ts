@@ -155,6 +155,12 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 const CODEX_CAPACITY_MAX_RETRIES = 5;
+/**
+ * Codex waits out a server's Retry-After without a cap, which a proxy holding
+ * exhausted quota sets to the reset, hours or days away. A retry on HTTP 429
+ * that has not recovered after this long is a usage limit, not a pause.
+ */
+const CODEX_USAGE_LIMIT_RETRY_GRACE = "5 minutes";
 export const CODEX_DRIVER_KIND = CODEX_PROVIDER;
 export const CODEX_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CODEX_DRIVER_KIND);
 
@@ -1094,6 +1100,27 @@ function codexExhaustionHttpStatus(errorInfo: CodexErrorInfo | null | undefined)
     : null;
 }
 
+/**
+ * Codex reports each retry it schedules as a disconnected stream carrying the
+ * failed attempt's HTTP status. A retry on 429 is the same usage or rate limit
+ * that exhaustion on 429 reports.
+ */
+function codexErrorHttpStatus(errorInfo: CodexErrorInfo | null | undefined): number | null {
+  if (typeof errorInfo !== "object" || errorInfo === null) {
+    return null;
+  }
+  if ("responseStreamDisconnected" in errorInfo) {
+    return errorInfo.responseStreamDisconnected.httpStatusCode ?? null;
+  }
+  if ("responseStreamConnectionFailed" in errorInfo) {
+    return errorInfo.responseStreamConnectionFailed.httpStatusCode ?? null;
+  }
+  if ("httpConnectionFailed" in errorInfo) {
+    return errorInfo.httpConnectionFailed.httpStatusCode ?? null;
+  }
+  return codexExhaustionHttpStatus(errorInfo);
+}
+
 function codexUsageLimitError(
   code: string | null,
   errorInfo: CodexErrorInfo | null | undefined,
@@ -1101,7 +1128,7 @@ function codexUsageLimitError(
   return (
     code === "usageLimitExceeded" ||
     code === "rateLimitExceeded" ||
-    codexExhaustionHttpStatus(errorInfo) === 429
+    codexErrorHttpStatus(errorInfo) === 429
   );
 }
 
@@ -1871,6 +1898,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<string, Map<string, CodexDynamicToolItem>>(),
         );
         const interruptingNativeTurns = yield* Ref.make(new Set<string>());
+        // Root turns this adapter stopped because Codex kept retrying a usage limit.
+        const usageLimitStops = new Set<string>();
         const terminalizedNonCompletedNativeTurns = yield* Ref.make(new Set<string>());
         // Keep the stream open until descendants settle to avoid stranding child projections.
         const deferredRootTerminals = yield* Ref.make(new Map<string, DeferredCodexRootTerminal>());
@@ -4580,6 +4609,53 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(turnTerminalizationPermit.withPermits(1)),
         );
 
+        // Ends a root turn still retrying the usage limit that started this retry.
+        // turn/completed then reports the turn failed on that limit, so it shows
+        // as Limited with its resume controls.
+        const stopUsageLimitedRetry = Effect.fnUntraced(function* (
+          context: ActiveCodexTurnContext,
+          retry: ActiveCodexProviderRetry,
+        ) {
+          const stopping = yield* turnTerminalizationPermit.withPermits(1)(
+            Effect.gen(function* () {
+              const pending = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
+              if (
+                (yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context ||
+                pending?.failure.class !== "usage_limit" ||
+                DateTime.toEpochMillis(pending.startedAt) !==
+                  DateTime.toEpochMillis(retry.startedAt) ||
+                (yield* Ref.get(interruptingNativeTurns)).has(context.nativeTurnId)
+              ) {
+                return false;
+              }
+              usageLimitStops.add(context.nativeTurnId);
+              return true;
+            }),
+          );
+          if (!stopping) {
+            return;
+          }
+          yield* Effect.logInfo("orchestration-v2.codex-usage-limit-retry-stopped", {
+            providerTurnId: context.providerTurnId,
+            nativeTurnId: context.nativeTurnId,
+          });
+          yield* client
+            .request("turn/interrupt", {
+              threadId: yield* getNativeThreadId(context.providerThread),
+              turnId: context.nativeTurnId,
+            })
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  usageLimitStops.delete(context.nativeTurnId);
+                  yield* Effect.logWarning("orchestration-v2.codex-usage-limit-stop-failed", {
+                    cause,
+                  });
+                }),
+              ),
+            );
+        });
+
         yield* client.handleServerNotification("error", (payload) =>
           Effect.gen(function* () {
             const context = yield* awaitActiveTurn(payload.turnId);
@@ -4652,6 +4728,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               driver: CODEX_PROVIDER,
               turnItem: codexRetryTurnItem(context, state, "running", updatedAt),
             });
+            if (
+              failure.class === "usage_limit" &&
+              previous?.failure.class !== "usage_limit" &&
+              context.subagent === null
+            ) {
+              yield* stopUsageLimitedRetry(context, state).pipe(
+                Effect.delay(CODEX_USAGE_LIMIT_RETRY_GRACE),
+                Effect.forkIn(scope),
+              );
+            }
           }).pipe(Effect.orDie),
         );
 
@@ -6446,9 +6532,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             const nativeStatus = mapCodexTurnStatus(payload.turn.status);
-            const status =
-              nativeStatus === "completed" &&
-              (yield* Ref.get(interruptingNativeTurns)).has(payload.turn.id)
+            // The pending usage-limit retry is the failure of a turn stopped for it.
+            const usageLimitStopped =
+              usageLimitStops.delete(payload.turn.id) && nativeStatus === "interrupted";
+            const status = usageLimitStopped
+              ? "failed"
+              : nativeStatus === "completed" &&
+                  (yield* Ref.get(interruptingNativeTurns)).has(payload.turn.id)
                 ? "interrupted"
                 : nativeStatus;
             const terminal = {
@@ -6456,7 +6546,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               nativeTurnId: payload.turn.id,
               status,
               completedAt: codexTimestamp(payload.turn.completedAt),
-              ...(payload.turn.error?.message === undefined
+              ...(usageLimitStopped || payload.turn.error?.message === undefined
                 ? {}
                 : {
                     failureMessage: payload.turn.error.message,
